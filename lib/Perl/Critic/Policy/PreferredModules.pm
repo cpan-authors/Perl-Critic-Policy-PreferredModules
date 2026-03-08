@@ -7,7 +7,6 @@ use parent 'Perl::Critic::Policy';
 
 use Perl::Critic::Utils qw{ :severities :classification :ppi $SEVERITY_MEDIUM $TRUE $FALSE };
 
-use Perl::Critic::Exception::AggregateConfiguration ();
 use Perl::Critic::Exception::Configuration::Generic ();
 
 use Config::INI::Reader ();
@@ -46,13 +45,9 @@ sub _add_exception {
 
     $msg //= q[Unknown Error];
 
-    $msg = __PACKAGE__ . ' ' . $msg;
-
-    my $errors = Perl::Critic::Exception::AggregateConfiguration->new();
-
-    $errors->add_exception( Perl::Critic::Exception::Configuration::Generic->throw( message => $msg ) );
-
-    return;
+    Perl::Critic::Exception::Configuration::Generic->throw(
+        message => __PACKAGE__ . ' ' . $msg
+    );
 }
 
 sub _parse_config {
@@ -63,10 +58,8 @@ sub _parse_config {
     }
 
     if ( !-e $cfg_file ) {
-        return $self->_add_exception(qq[config file '$cfg_file' does not exist.]);
+        $self->_add_exception(qq[config file '$cfg_file' does not exist.]);
     }
-
-    return unless $cfg_file && -e $cfg_file;
 
     # slurp the file rather than using `read_file` for compat with Test::MockFile
     my $content;
@@ -78,7 +71,7 @@ sub _parse_config {
 
     my $preferred_cfg;
     eval { $preferred_cfg = Config::INI::Reader->read_string($content); 1 } or do {
-        return $self->_add_exception(qq[Invalid configuration file $cfg_file]);
+        $self->_add_exception(qq[Invalid configuration file $cfg_file]);
     };
 
     my %valid_opts    = map { $_ => 1 } optional_config_attributes();
