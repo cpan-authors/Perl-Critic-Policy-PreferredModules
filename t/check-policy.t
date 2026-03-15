@@ -7,18 +7,17 @@ use Test2::V0;
 use Test2::Tools::Explain;
 use Test2::Plugin::NoWarnings;
 
-use Test::MockFile;
+use File::Temp ();
 
 use Perl::Critic::Policy::PreferredModules ();
 use Perl::Critic                           ();
 
-my $profile_rc = q[/test/profile.rc];
-my $config_ini = q[/test/preferred_modules.ini];
+my $tmpdir = File::Temp::tempdir( CLEANUP => 1 );
 
-my $mock_profile    = Test::MockFile->file($profile_rc);
-my $mock_config_ini = Test::MockFile->file($config_ini);
+my $profile_rc = "$tmpdir/profile.rc";
+my $config_ini = "$tmpdir/preferred_modules.ini";
 
-$mock_profile->contents( <<"EOS" );
+_write_file( $profile_rc, <<"EOS" );
 severity = 1
 verbose  = 8
 
@@ -40,7 +39,7 @@ EOS
     );
 }
 
-$mock_config_ini->contents( <<EOS );
+_write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 prefer = Another::Package
 reason = Please prefer using Another::Package rather than package Do::Not::Recommend
@@ -59,7 +58,7 @@ my $critic = Perl::Critic->new(
 
 {
 
-    $mock_config_ini->contents( <<EOS );
+    _write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 prefer = Another::Package
 reason = Please prefer using Another::Package rather than package Do::Not::Recommend
@@ -80,7 +79,7 @@ EOS
 
 {    # using invalid args
 
-    $mock_config_ini->contents( <<EOS );
+    _write_file( $config_ini, <<EOS );
 [Do::Not::Recommend]
 boom = Unknown arg
 EOS
@@ -100,7 +99,7 @@ EOS
 
 ## Shared init
 
-$mock_config_ini->contents( <<EOS );
+_write_file( $config_ini, <<EOS );
 [FindBin]
 prefer = Something::Else
 reason = relax this is just a test
@@ -216,6 +215,14 @@ sub _massage_violations {
     my (@violations) = @_;
 
     return [ map { [ $_->description, $_->explanation ] } @violations ];
+}
+
+sub _write_file {
+    my ( $path, $content ) = @_;
+
+    open my $fh, '>', $path or die "Cannot write $path: $!";
+    print $fh $content;
+    close $fh;
 }
 
 1;

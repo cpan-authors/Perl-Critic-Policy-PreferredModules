@@ -21,7 +21,6 @@ on "test" => sub {
     requires "Test2::Tools::Explain"     => "0";
     requires "Test2::Plugin::NoWarnings" => "0";
     requires "File::Temp"                => "0";
-    requires "Test::MockFile"            => "0";
     requires "Test::CPAN::Meta"          => "0";
 };
 
