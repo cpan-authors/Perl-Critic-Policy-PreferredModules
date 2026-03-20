@@ -169,7 +169,7 @@ EOS
         _massage_violations(@violations),
         [
             [
-                'Prefer using module module Something::Else over FindBin',
+                'Prefer using Something::Else over FindBin',
                 'relax this is just a test'
             ]
         ],
@@ -193,7 +193,7 @@ EOS
         _massage_violations(@violations),
         [
             [
-                'Prefer using module module Something::Else over FindBin',
+                'Prefer using Something::Else over FindBin',
                 'relax this is just a test'
             ]
         ],
@@ -220,11 +220,11 @@ EOS
         _massage_violations(@violations),
         [
             [
-                'Prefer using module module Something::Else over FindBin',
+                'Prefer using Something::Else over FindBin',
                 'relax this is just a test'
             ],
             [
-                'Prefer using module module XML::Simple over XML::LibXML',
+                'Prefer using XML::Simple over XML::LibXML',
                 'Using module XML::LibXML is not recommended'
             ],
             [
