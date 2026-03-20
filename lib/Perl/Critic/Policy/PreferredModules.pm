@@ -103,9 +103,41 @@ sub _parse_config {
         }
     }
 
+    # Separate glob patterns from exact module names
+    my %exact;
+    my @globs;
+
+    foreach my $pkg ( keys %$preferred_cfg ) {
+        if ( $pkg =~ /[*?]/ ) {
+            # Validate glob pattern: must look like a namespace glob
+            if ( $pkg !~ /\A[A-Za-z_][A-Za-z0-9_:*?]*\z/ ) {
+                $errors->add_exception(
+                    Perl::Critic::Exception::Configuration::Generic->new(
+                        message => __PACKAGE__ . " Invalid configuration - Glob pattern '$pkg' contains invalid characters",
+                    )
+                );
+            }
+
+            # Convert glob to regex: * matches any sequence, ? matches a single non-colon char
+            my $re = $pkg;
+            $re = quotemeta($re);
+            $re =~ s/\\\*/.*/g;
+            $re =~ s/\\\?/[^:]/g;
+            push @globs, {
+                pattern => $pkg,
+                regex   => qr/\A$re\z/,
+                setup   => $preferred_cfg->{$pkg},
+            };
+        }
+        else {
+            $exact{$pkg} = $preferred_cfg->{$pkg};
+        }
+    }
+
     die $errors if $errors->has_exceptions();
 
-    $self->{_cfg_preferred_modules} = $preferred_cfg;
+    $self->{_cfg_preferred_modules} = \%exact;
+    $self->{_cfg_preferred_globs}   = \@globs;
 
     return 1;
 }
@@ -123,7 +155,18 @@ sub violates {
     my $module = $elem->module;
 
     return () unless defined $module;
-    return () unless my $setup = $self->{_cfg_preferred_modules}->{$module};
+
+    # Exact match first, then glob patterns
+    my $setup = $self->{_cfg_preferred_modules}->{$module};
+    if ( !$setup && $self->{_cfg_preferred_globs} ) {
+        for my $glob ( @{ $self->{_cfg_preferred_globs} } ) {
+            if ( $module =~ $glob->{regex} ) {
+                $setup = $glob->{setup};
+                last;
+            }
+        }
+    }
+    return () unless $setup;
 
     my $desc = qq[Using module $module is not recommended];
     my $expl = $setup->{reason} // $desc;
@@ -191,6 +234,16 @@ The  F<preferred_modules.ini> file is using the L<Config::INI> format and can lo
 
     [Custom::Message]
     message="Do not use Custom::Message - see internal wiki for details"
+
+    # Wildcard patterns match entire namespaces
+    [CGI::*]
+    prefer = Plack
+    reason = "CGI modules are deprecated, use Plack instead"
+
+Section names support glob-style wildcards: C<*> matches any sequence of
+characters and C<?> matches any single non-colon character. This lets you
+ban entire namespaces with one entry. Exact module names always take
+precedence over glob matches.
 
 Each module entry supports the following optional keys:
 
