@@ -25,7 +25,7 @@ sub supported_parameters {
 use constant default_severity => $SEVERITY_MEDIUM;
 use constant applies_to       => 'PPI::Statement::Include';
 
-use constant optional_config_attributes => qw{ prefer reason severity };
+use constant optional_config_attributes => qw{ prefer reason severity message };
 
 # VERSION
 # ABSTRACT: Provide custom package recommendations
@@ -119,7 +119,10 @@ sub violates {
     my $desc = qq[Using module $module is not recommended];
     my $expl = $setup->{reason} // $desc;
 
-    if ( my $prefer = $setup->{prefer} ) {
+    if ( defined $setup->{message} ) {
+        $desc = $setup->{message};
+    }
+    elsif ( my $prefer = $setup->{prefer} ) {
         $desc = "Prefer using module $prefer over $module";
     }
 
@@ -177,6 +180,9 @@ The  F<preferred_modules.ini> file is using the L<Config::INI> format and can lo
     severity=5
     reason="This module has known security vulnerabilities"
 
+    [Custom::Message]
+    message="Do not use Custom::Message - see internal wiki for details"
+
 Each module entry supports the following optional keys:
 
 =over 4
@@ -186,6 +192,8 @@ Each module entry supports the following optional keys:
 =item C<reason> - Explanation shown in the violation message
 
 =item C<severity> - Override the policy's default severity for this module (1-5, where 5 is most severe)
+
+=item C<message> - Free-form description that fully replaces the auto-generated violation text
 
 =back
 

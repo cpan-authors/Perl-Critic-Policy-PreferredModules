@@ -320,6 +320,120 @@ EOS
     );
 }
 
+# message override tests
+
+{
+    note "message key replaces auto-generated description";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+reason = relax this is just a test
+message = Do not use FindBin - see internal wiki
+EOS
+
+    my $msg_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+1;
+EOS
+
+    my @violations = $msg_critic->critique( \$code );
+    is scalar @violations => 1, "FindBin violation with message override";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'Do not use FindBin - see internal wiki',
+                'relax this is just a test'
+            ]
+        ],
+        'message overrides auto-generated description, reason still used as explanation'
+    );
+}
+
+{
+    note "message key without prefer or reason";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+message = This module is forbidden by policy
+EOS
+
+    my $msg_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use Bad::Module;
+
+1;
+EOS
+
+    my @violations = $msg_critic->critique( \$code );
+    is scalar @violations => 1, "Bad::Module violation with message only";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'This module is forbidden by policy',
+                'Using module Bad::Module is not recommended'
+            ]
+        ],
+        'message replaces description, default explanation used when no reason'
+    );
+}
+
+{
+    note "message key combined with severity override";
+
+    _write_file( $config_ini, <<EOS );
+[Dangerous::Module]
+message = CRITICAL: Do not use this module
+severity = 5
+EOS
+
+    my $msg_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use Dangerous::Module;
+
+1;
+EOS
+
+    my @violations = $msg_critic->critique( \$code );
+    is scalar @violations => 1, "Dangerous::Module violation with message + severity";
+    is $violations[0]->severity, 5, "severity override works with message";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'CRITICAL: Do not use this module',
+                'Using module Dangerous::Module is not recommended'
+            ]
+        ],
+        'message and severity work together'
+    );
+}
+
 {
     note "non-numeric severity value";
 
