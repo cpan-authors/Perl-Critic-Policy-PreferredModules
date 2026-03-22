@@ -68,11 +68,11 @@ sub _parse_config {
 
     return unless $cfg_file && -e $cfg_file;
 
-    # slurp the file rather than using `read_file` for compat with Test::MockFile
     my $content;
     {
         local $/;
-        open my $fh, '<', $cfg_file or return;
+        open my $fh, '<', $cfg_file
+            or return $self->_add_exception(qq[Cannot open config file '$cfg_file': $!]);
         $content = <$fh>;
     }
 
@@ -82,6 +82,9 @@ sub _parse_config {
     };
 
     my %valid_opts    = map { $_ => 1 } optional_config_attributes();
+
+    # Config::INI uses '_' for the root/default section — skip it
+    delete $preferred_cfg->{'_'};
 
     foreach my $pkg ( keys %$preferred_cfg ) {
         my $setup = $preferred_cfg->{$pkg};
