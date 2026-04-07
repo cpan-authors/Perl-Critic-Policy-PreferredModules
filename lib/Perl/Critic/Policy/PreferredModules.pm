@@ -66,8 +66,6 @@ sub _parse_config {
         return $self->_add_exception(qq[config file '$cfg_file' does not exist.]);
     }
 
-    return unless $cfg_file && -e $cfg_file;
-
     my $content;
     {
         local $/;

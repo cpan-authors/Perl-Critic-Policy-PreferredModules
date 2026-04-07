@@ -340,7 +340,9 @@ EOS
     );
 }
 
-{
+SKIP: {
+    skip "chmod has no effect for root", 1 if $> == 0;
+
     note "unreadable config file";
 
     my $unreadable = File::Spec->catfile( $tmpdir, 'unreadable.ini' );
