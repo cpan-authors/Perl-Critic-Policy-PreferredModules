@@ -11,7 +11,15 @@ use File::Temp qw( tempdir );
 use File::Spec ();
 
 use Perl::Critic::Policy::PreferredModules ();
-use Perl::Critic                           ();
+
+# Perl::Critic loads PolicyFactory at import time, which scans directories via
+# File::Find.  On certain Perl builds (e.g. debug/DEBUGGING) File::Find can
+# fail with "Can't use string ("DIR") as a symbol ref" (GH #2).
+# Guard the import so the test suite skips gracefully instead of crashing.
+BEGIN {
+    eval { require Perl::Critic; 1 }
+        or skip_all("Perl::Critic cannot initialize: $@");
+}
 
 my $tmpdir     = tempdir( CLEANUP => 1 );
 my $profile_rc = File::Spec->catfile( $tmpdir, 'profile.rc' );
