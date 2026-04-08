@@ -42,7 +42,17 @@ prefer=A::Better:Module
 
 [Only::Reason]
 reason="If you use this module, a puppy might die."
+
+[Hard::Ban]
+severity=5
+reason="This module has known security vulnerabilities"
 ```
+
+Each module entry supports the following optional keys:
+
+- `prefer` - Suggested replacement module
+- `reason` - Explanation shown in the violation message
+- `severity` - Override the policy's default severity for this module (1-5, where 5 is most severe)
 
 # SEE ALSO
 
