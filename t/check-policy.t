@@ -586,6 +586,91 @@ EOS
         "Reports unknown setting for Beta";
 }
 
+# parent/base module argument checking
+
+{
+    note "use parent module checking";
+
+    _write_file( $config_ini, <<EOS );
+[Banned::Parent]
+prefer = Good::Parent
+reason = Banned::Parent has issues
+[Another::Bad]
+EOS
+
+    my $parent_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use parent 'Banned::Parent';
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 1, "use parent catches banned module in arguments";
+        like $violations[0]->description, qr/Banned::Parent/, "violation mentions the parent module";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use base 'Banned::Parent';
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 1, "use base catches banned module in arguments";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use parent qw(Banned::Parent Another::Bad);
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 2, "use parent qw() catches multiple banned parents";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use parent -norequire, 'Banned::Parent';
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 1, "use parent -norequire still catches banned parent";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use parent 'Safe::Module';
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 0, "use parent with non-banned module is fine";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+use parent 'Banned::Parent', 'Safe::Module';
+1;
+EOS
+
+        my @violations = $parent_critic->critique( \$code );
+        is scalar @violations => 1, "use parent with mix of banned and safe catches only banned";
+    }
+}
+
 done_testing;
 
 sub _massage_violations {
