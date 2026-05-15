@@ -25,6 +25,7 @@ jobs:
         uses: perl-actions/install-with-cpm@v1
         with:
           cpanfile: "cpanfile"
+          version: "0.997014"
       - name: prove tests
         run: prove -vl t/*.t
 
@@ -71,6 +72,7 @@ jobs:
         with:
           sudo: false
           cpanfile: "cpanfile"
+          version: "0.997014"
           args: "--with-recommends --with-suggests"
       - name: prove tests
         run: prove -vl t/*.t
