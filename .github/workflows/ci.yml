@@ -49,5 +49,6 @@ jobs:
           sudo: false
           cpanfile: "cpanfile"
           args: "--with-recommends --with-suggests"
+          version: "0.997014"
       - name: Run tests
         run: prove -vl t/*.t
