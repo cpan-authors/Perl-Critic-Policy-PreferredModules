@@ -41,18 +41,12 @@ sub initialize_if_enabled {
     return $TRUE;
 }
 
-sub _add_exception {
+sub _throw {
     my ( $self, $msg ) = @_;
 
-    $msg //= q[Unknown Error];
-
-    $msg = __PACKAGE__ . ' ' . $msg;
-
-    my $errors = Perl::Critic::Exception::AggregateConfiguration->new();
-
-    $errors->add_exception( Perl::Critic::Exception::Configuration::Generic->throw( message => $msg ) );
-
-    return;
+    Perl::Critic::Exception::Configuration::Generic->throw(
+        message => __PACKAGE__ . ' ' . ( $msg // 'Unknown Error' ),
+    );
 }
 
 sub _parse_config {
@@ -63,7 +57,7 @@ sub _parse_config {
     }
 
     if ( !-e $cfg_file ) {
-        return $self->_add_exception(qq[config file '$cfg_file' does not exist.]);
+        $self->_throw(qq[config file '$cfg_file' does not exist.]);
     }
 
     my $content;
@@ -76,30 +70,40 @@ sub _parse_config {
 
     my $preferred_cfg;
     eval { $preferred_cfg = Config::INI::Reader->read_string($content); 1 } or do {
-        return $self->_add_exception(qq[Invalid configuration file $cfg_file]);
+        $self->_throw(qq[Invalid configuration file $cfg_file]);
     };
 
-    my %valid_opts    = map { $_ => 1 } optional_config_attributes();
+    my %valid_opts = map { $_ => 1 } optional_config_attributes();
+    my $errors     = Perl::Critic::Exception::AggregateConfiguration->new();
 
     # Config::INI uses '_' for the root/default section — skip it
     delete $preferred_cfg->{'_'};
 
-    foreach my $pkg ( keys %$preferred_cfg ) {
+    foreach my $pkg ( sort keys %$preferred_cfg ) {
         my $setup = $preferred_cfg->{$pkg};
 
-        my @has_opts = keys %$setup;
-        foreach my $opt (@has_opts) {
+        foreach my $opt ( keys %$setup ) {
             next if $valid_opts{$opt};
-            $self->_add_exception("Invalid configuration - Package '$pkg' is using an unknown setting '$opt'");
+            $errors->add_exception(
+                Perl::Critic::Exception::Configuration::Generic->new(
+                    message => __PACKAGE__ . " Invalid configuration - Package '$pkg' is using an unknown setting '$opt'",
+                )
+            );
         }
 
         if ( defined $setup->{severity} ) {
             my $sev = $setup->{severity};
             if ( $sev !~ /\A[1-5]\z/ ) {
-                $self->_add_exception("Invalid configuration - Package '$pkg' has invalid severity '$sev' (must be 1-5)");
+                $errors->add_exception(
+                    Perl::Critic::Exception::Configuration::Generic->new(
+                        message => __PACKAGE__ . " Invalid configuration - Package '$pkg' has invalid severity '$sev' (must be 1-5)",
+                    )
+                );
             }
         }
     }
+
+    die $errors if $errors->has_exceptions();
 
     $self->{_cfg_preferred_modules} = $preferred_cfg;
 

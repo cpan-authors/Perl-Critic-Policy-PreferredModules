@@ -528,6 +528,33 @@ EOS
     }
 }
 
+{
+    note "multiple config errors reported together";
+
+    _write_file( $config_ini, <<EOS );
+[Alpha::Module]
+boom = bad option
+severity = 99
+
+[Beta::Module]
+fizz = another bad option
+EOS
+
+    my $err = dies {
+        Perl::Critic->new(
+            '-profile'       => $profile_rc,
+            '-single-policy' => 'PreferredModules'
+        )
+    };
+    ok $err, "Throws on multiple config errors";
+    like $err, qr{Alpha::Module.*unknown setting 'boom'},
+        "Reports unknown setting for Alpha";
+    like $err, qr{Alpha::Module.*invalid severity '99'},
+        "Reports invalid severity for Alpha";
+    like $err, qr{Beta::Module.*unknown setting 'fizz'},
+        "Reports unknown setting for Beta";
+}
+
 done_testing;
 
 sub _massage_violations {
