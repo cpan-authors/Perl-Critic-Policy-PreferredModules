@@ -23,6 +23,7 @@ sub supported_parameters {
 }
 
 use constant default_severity => $SEVERITY_MEDIUM;
+use constant default_themes   => qw( maintenance modules );
 use constant applies_to       => 'PPI::Statement::Include';
 
 use constant optional_config_attributes => qw{ prefer reason severity };
@@ -105,10 +106,15 @@ sub _parse_config {
     return 1;
 }
 
+sub prepare_to_scan_document {
+    my ( $self, $document ) = @_;
+
+    return $self->{_is_enabled};
+}
+
 sub violates {
     my ( $self, $elem ) = @_;
 
-    return () unless $self->{_is_enabled};
     return () unless $elem;
 
     my $module = $elem->module;
@@ -145,8 +151,6 @@ Every project has its own rules for preferring specific packages over others.
 
 This Policy tries to be `un-opinionated` and let the user provide a module
 preferences with an explanation and/or suggested alternative.
-
-=head1 MODULES
 
 =head1 CONFIGURATION
 
