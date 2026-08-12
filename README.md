@@ -241,6 +241,17 @@ use base qw(Banned::Module);
 use parent -norequire, 'Banned::Module';
 ```
 
+# CONDITIONAL LOADING
+
+The policy detects modules loaded via `use if`:
+
+```perl
+use if $] >= 5.010, 'Some::Module';
+```
+
+If `Some::Module` is listed in the configuration file, a violation will be
+reported. This ensures that conditional imports are not silently overlooked.
+
 # SEE ALSO
 
 [Perl::Critic](https://metacpan.org/pod/Perl%3A%3ACritic)
