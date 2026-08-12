@@ -671,6 +671,231 @@ EOS
     }
 }
 
+# partial preferences: the 'for' key
+
+{
+    note "partial preference using 'for'";
+
+    _write_file( $config_ini, <<EOS );
+[File::Slurper]
+prefer = File::Slurper::Temp
+for = write_binary write_text
+reason = File::Slurper::Temp writes atomically
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ write_text };
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "importing a listed function is a violation";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module File::Slurper::Temp over File::Slurper for write_binary, write_text',
+                    'File::Slurper::Temp writes atomically'
+                ]
+            ],
+            'violation mentions the functions it applies to'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ read_text read_binary };
+
+my $content = read_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "importing only unlisted functions is fine";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ read_text write_binary };
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "a single listed function among others is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper 'write_text';
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "quoted import list is honored";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper;
+
+write_text( $file, $content );
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "call to a listed function without an import list is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+require File::Slurper;
+
+File::Slurper::write_binary( $file, $content );
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "fully qualified call to a listed function is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper;
+
+my $content = File::Slurper::read_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "no listed function used, no violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper ();
+
+my $obj = Some::Object->write_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "a method call is not a function call";
+    }
+}
+
+{
+    note "'for' without prefer";
+
+    _write_file( $config_ini, <<EOS );
+[XML::LibXML]
+for = parse_html_string
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use XML::LibXML qw{ parse_html_string };
+
+1;
+EOS
+
+    my @violations = $for_critic->critique( \$code );
+    is scalar @violations => 1, "'for' works without a prefer entry";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'Using module XML::LibXML is not recommended for parse_html_string',
+                'Using module XML::LibXML is not recommended'
+            ]
+        ],
+        'violation description'
+    );
+}
+
+{
+    note "comma separated 'for' list";
+
+    _write_file( $config_ini, <<EOS );
+[File::Slurper]
+prefer = File::Slurper::Temp
+for = write_binary, write_text
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ write_binary };
+
+1;
+EOS
+
+    my @violations = $for_critic->critique( \$code );
+    is scalar @violations => 1, "comma separated list is honored";
+}
+
+{
+    note "empty 'for' value";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+for =
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{has an empty 'for' list},
+        "Throw exception on an empty 'for' list"
+    );
+}
+
 done_testing;
 
 sub _massage_violations {

@@ -2,6 +2,8 @@ Revision history for Perl-Critic-Policy-PreferredModules
 
 {{$NEXT}}
 
+- add a 'for' key to restrict a preference to a list of functions (GH #23)
+
 0.004     2022-01-24 15:09:18-07:00 America/Denver
 
 - fix pod and avoid duplicate name entry

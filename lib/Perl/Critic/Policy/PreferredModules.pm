@@ -25,7 +25,7 @@ sub supported_parameters {
 use constant default_severity => $SEVERITY_MEDIUM;
 use constant applies_to       => 'PPI::Statement::Include';
 
-use constant optional_config_attributes => qw{ prefer reason severity message };
+use constant optional_config_attributes => qw{ prefer reason severity message for };
 
 # VERSION
 # ABSTRACT: Provide custom package recommendations
@@ -101,6 +101,18 @@ sub _parse_config {
                 );
             }
         }
+
+        if ( defined $setup->{for} ) {
+            my @functions = grep { length } split m{[\s,]+}, $setup->{for};
+            if ( !@functions ) {
+                $errors->add_exception(
+                    Perl::Critic::Exception::Configuration::Generic->new(
+                        message => __PACKAGE__ . " Invalid configuration - Package '$pkg' has an empty 'for' list",
+                    )
+                );
+            }
+            $setup->{_for_functions} = \@functions;
+        }
     }
 
     die $errors if $errors->has_exceptions();
@@ -108,6 +120,61 @@ sub _parse_config {
     $self->{_cfg_preferred_modules} = $preferred_cfg;
 
     return 1;
+}
+
+# Return the list of names explicitly imported by an include statement,
+# e.g. `use Foo qw{ bar baz }` or `use Foo 'bar', 'baz'`.
+sub _imported_names {
+    my ( $self, $elem ) = @_;
+
+    my @names;
+
+    foreach my $arg ( $elem->arguments ) {
+        if ( $arg->isa('PPI::Token::QuoteLike::Words') ) {
+            push @names, $arg->literal;
+        }
+        elsif ( $arg->isa('PPI::Token::Quote') ) {
+            push @names, $arg->string;
+        }
+    }
+
+    return @names;
+}
+
+# Look for calls to any of @functions anywhere in the document, either as a
+# plain function call or fully qualified as $module::function.
+sub _document_calls_any {
+    my ( $self, $elem, $module, @functions ) = @_;
+
+    my $doc = $elem->top or return $FALSE;
+    return $FALSE unless $doc->isa('PPI::Document');
+
+    my %wanted = map { ( $_ => 1, "${module}::$_" => 1 ) } @functions;
+
+    my $words = $doc->find( sub { $_[1]->isa('PPI::Token::Word') && $wanted{ $_[1]->content } } ) or return $FALSE;
+
+    foreach my $word (@$words) {
+        return $TRUE if is_function_call($word);
+    }
+
+    return $FALSE;
+}
+
+# A `for` entry restricts the preference to the listed functions: the module is
+# only reported when one of them is actually pulled in or called.
+sub _matches_for {
+    my ( $self, $elem, $module, $setup ) = @_;
+
+    my $functions = $setup->{_for_functions};
+    return $TRUE unless $functions && @$functions;
+
+    my %wanted = map { $_ => 1 } @$functions;
+
+    foreach my $name ( $self->_imported_names($elem) ) {
+        return $TRUE if $wanted{$name};
+    }
+
+    return $self->_document_calls_any( $elem, $module, @$functions );
 }
 
 sub violates {
@@ -144,6 +211,8 @@ sub violates {
 sub _build_violation {
     my ( $self, $module, $setup, $elem ) = @_;
 
+    return () unless $self->_matches_for( $elem, $module, $setup );
+
     my $desc = qq[Using module $module is not recommended];
     my $expl = $setup->{reason} // $desc;
 
@@ -152,6 +221,10 @@ sub _build_violation {
     }
     elsif ( my $prefer = $setup->{prefer} ) {
         $desc = "Prefer using module $prefer over $module";
+    }
+
+    if ( my $functions = $setup->{_for_functions} ) {
+        $desc .= ' for ' . join( ', ', @$functions );
     }
 
     if ( my $sev = $setup->{severity} ) {
@@ -227,6 +300,10 @@ The  F<preferred_modules.ini> file is using the L<Config::INI> format and can lo
     [Custom::Message]
     message="Do not use Custom::Message - see internal wiki for details"
 
+    [File::Slurper]
+    prefer = File::Slurper::Temp
+    for = write_binary write_text
+
 Each module entry supports the following optional keys:
 
 =over 4
@@ -239,7 +316,39 @@ Each module entry supports the following optional keys:
 
 =item C<message> - Free-form description that fully replaces the auto-generated violation text
 
+=item C<for> - Restrict the preference to a list of functions (whitespace and/or comma separated)
+
 =back
+
+=head2 Partial preferences
+
+Sometimes the preferred module only implements a part of the API it replaces.
+For example L<File::Slurper::Temp> is a rename-in-place writer: it provides the
+C<write_> functions of L<File::Slurper> but none of its readers. Recommending it
+unconditionally would be wrong.
+
+The C<for> key limits the recommendation to the listed functions:
+
+    [File::Slurper]
+    prefer = File::Slurper::Temp
+    for = write_binary write_text
+
+With that configuration:
+
+    use File::Slurper qw{ write_text };            # violation
+    use File::Slurper qw{ read_text };             # no violation
+    use File::Slurper qw{ read_text write_text };  # violation
+
+When the import list does not name any of them - because there is no import
+list, or because it only uses export tags - the rest of the document is
+inspected instead, and the violation is only reported if one of the listed
+functions is actually called, either directly or fully qualified:
+
+    use File::Slurper;
+    write_text( $file, $content );                 # violation
+
+    require File::Slurper;
+    File::Slurper::read_text($file);               # no violation
 
 =head1 PARENT AND BASE CLASS CHECKING
 
