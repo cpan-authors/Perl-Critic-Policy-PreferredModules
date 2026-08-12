@@ -2,6 +2,15 @@ Revision history for Perl-Critic-Policy-PreferredModules
 
 {{$NEXT}}
 
+- add a 'for' key to restrict a preference to a list of functions (GH #23)
+- add '[perl/<function>]' sections to prefer a module's implementation of a
+  builtin function (GH #23)
+- check a bare 'use' against the preferred module's exports, so a module that
+  does not export the function by default is reported rather than assumed to
+  have taken effect (GH #23)
+- such a configuration now requires -allow-unsafe, since resolving the exports
+  loads the module (GH #23)
+
 0.004     2022-01-24 15:09:18-07:00 America/Denver
 
 - fix pod and avoid duplicate name entry

@@ -24,6 +24,46 @@ sub _write_file {
     close $fh;
 }
 
+# Fixture modules for the export inspection tests, so the results do not depend
+# on what happens to be installed.
+my $lib_dir = File::Spec->catdir( $tmpdir, 'lib' );
+mkdir $lib_dir                                     or die "Cannot mkdir $lib_dir: $!";
+mkdir File::Spec->catdir( $lib_dir, 'TestRand' )   or die "Cannot mkdir: $!";
+unshift @INC, $lib_dir;
+
+sub _write_module {
+    my ( $name, $body ) = @_;
+
+    my @parts = split m{::}, "$name.pm";
+    _write_file( File::Spec->catfile( $lib_dir, @parts ), <<"EOS" );
+package $name;
+use strict;
+use warnings;
+use Exporter 'import';
+sub rand  { return 4 }
+sub irand { return 4 }
+$body
+1;
+EOS
+
+    return;
+}
+
+_write_module( 'TestRand::Default',   'our \@EXPORT = qw(rand); our \@EXPORT_OK = qw(irand);' );
+_write_module( 'TestRand::OnRequest', <<'EOS' );
+our @EXPORT = qw();
+our @EXPORT_OK = qw(rand irand);
+our %EXPORT_TAGS = ( all => [qw(rand irand)] );
+EOS
+
+# will not load, so its exports can only be read by parsing the source
+_write_module( 'TestRand::Unloadable',    'our @EXPORT = qw(rand); die "boom";' );
+_write_module( 'TestRand::UnloadableOnly', <<'EOS' );
+our @EXPORT = qw();
+our @EXPORT_OK = ( 'rand' );
+die "boom";
+EOS
+
 _write_file( $profile_rc, <<"EOS" );
 severity = 1
 verbose  = 8
@@ -669,6 +709,840 @@ EOS
         my @violations = $parent_critic->critique( \$code );
         is scalar @violations => 1, "use parent with mix of banned and safe catches only banned";
     }
+}
+
+# partial preferences: the 'for' key
+
+{
+    note "partial preference using 'for'";
+
+    _write_file( $config_ini, <<EOS );
+[File::Slurper]
+prefer = File::Slurper::Temp
+for = write_binary write_text
+reason = File::Slurper::Temp writes atomically
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ write_text };
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "importing a listed function is a violation";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module File::Slurper::Temp over File::Slurper for write_binary, write_text',
+                    'File::Slurper::Temp writes atomically'
+                ]
+            ],
+            'violation mentions the functions it applies to'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ read_text read_binary };
+
+my $content = read_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "importing only unlisted functions is fine";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ read_text write_binary };
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "a single listed function among others is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper 'write_text';
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "quoted import list is honored";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper;
+
+write_text( $file, $content );
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "call to a listed function without an import list is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+require File::Slurper;
+
+File::Slurper::write_binary( $file, $content );
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 1, "fully qualified call to a listed function is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper;
+
+my $content = File::Slurper::read_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "no listed function used, no violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper ();
+
+my $obj = Some::Object->write_text($file);
+
+1;
+EOS
+
+        my @violations = $for_critic->critique( \$code );
+        is scalar @violations => 0, "a method call is not a function call";
+    }
+}
+
+{
+    note "'for' without prefer";
+
+    _write_file( $config_ini, <<EOS );
+[XML::LibXML]
+for = parse_html_string
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use XML::LibXML qw{ parse_html_string };
+
+1;
+EOS
+
+    my @violations = $for_critic->critique( \$code );
+    is scalar @violations => 1, "'for' works without a prefer entry";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'Using module XML::LibXML is not recommended for parse_html_string',
+                'Using module XML::LibXML is not recommended'
+            ]
+        ],
+        'violation description'
+    );
+}
+
+{
+    note "comma separated 'for' list";
+
+    _write_file( $config_ini, <<EOS );
+[File::Slurper]
+prefer = File::Slurper::Temp
+for = write_binary, write_text
+EOS
+
+    my $for_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use File::Slurper qw{ write_binary };
+
+1;
+EOS
+
+    my @violations = $for_critic->critique( \$code );
+    is scalar @violations => 1, "comma separated list is honored";
+}
+
+{
+    note "empty 'for' value";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+for =
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{has an empty 'for' list},
+        "Throw exception on an empty 'for' list"
+    );
+}
+
+# preferring a module over a builtin function: [perl/<function>]
+
+{
+    note "prefer a module over a builtin function";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = Crypt::PRNG
+reason = the builtin rand is not cryptographically secure
+[perl/sleep]
+prefer = Time::HiRes
+EOS
+
+    my $builtin_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "calling the builtin rand is a violation";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using Crypt::PRNG::rand over the builtin rand',
+                    'the builtin rand is not cryptographically secure'
+                ]
+            ],
+            'violation description & explanation'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = rand;
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "a call without parentheses is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+sleep 1;
+my $x = rand(10);
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 2, "multiple [perl/...] sections are all honored";
+
+        is(
+            [ map { $_->description } @violations ],
+            [
+                'Prefer using Time::HiRes::sleep over the builtin sleep',
+                'Prefer using Crypt::PRNG::rand over the builtin rand',
+            ],
+            'one violation per configured builtin'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG qw{ rand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "importing the preferred implementation clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG ();
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "`use Module ()` imports nothing, so the builtin is still used";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG qw{ irand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "importing another function does not clear the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = $prng->rand();
+my %h = ( rand => 1, sleep => 2 );
+
+sub rand_helper { return 42 }
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "method calls, hash keys and sub names are not builtin calls";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = Crypt::PRNG::rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "a fully qualified call does not match a [perl/...] section";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+sub roll {
+    return rand();
+}
+
+use Crypt::PRNG qw{ rand };
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "the import is looked up document wide, not per scope";
+    }
+}
+
+{
+    note "a bare use only silences the violation when the function is exported by default";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Default
+EOS
+
+    my $default_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::Default;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $default_critic->critique( \$code );
+    is scalar @violations => 0, "rand is in \@EXPORT, so a bare use does provide it";
+}
+
+{
+    note "a module that exports the function on request only";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    my $on_request_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest;
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 1, "a bare use does not provide a function that is not in \@EXPORT";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using TestRand::OnRequest::rand over the builtin rand',
+                    'TestRand::OnRequest exports rand on request only, so this call is still the builtin'
+                      . ' - import it explicitly with `use TestRand::OnRequest qw{ rand }`'
+                ]
+            ],
+            'the explanation says what went wrong and how to fix it'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ rand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "importing it explicitly clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ :all };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "an export tag covering the function clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ :nonesuch };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "an unknown tag is assumed to cover the function";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ irand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 1, "importing a different function does not clear the violation";
+    }
+}
+
+{
+    note "a module that cannot be loaded is read from its source";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Unloadable
+EOS
+
+    my $unloadable_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::Unloadable;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unloadable_critic->critique( \$code );
+    is scalar @violations => 0, "\@EXPORT is parsed out of a module that will not load";
+}
+
+{
+    note "a module that cannot be loaded and does not export by default";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::UnloadableOnly
+EOS
+
+    my $unloadable_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::UnloadableOnly;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unloadable_critic->critique( \$code );
+    is scalar @violations => 1, "parsing the source also catches the on-request case";
+}
+
+{
+    note "a module whose exports cannot be resolved at all";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::NoSuchModule
+EOS
+
+    my $unknown_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::NoSuchModule;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unknown_critic->critique( \$code );
+    is scalar @violations => 0, "an unresolvable module is assumed to export the function";
+}
+
+{
+    note "builtin preference without prefer, and severity override";
+
+    _write_file( $config_ini, <<EOS );
+[perl/each]
+reason = iterating with each() is error prone
+severity = 4
+EOS
+
+    my $builtin_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+while ( my ( $k, $v ) = each(%h) ) { }
+
+1;
+EOS
+
+    my @violations = $builtin_critic->critique( \$code );
+    is scalar @violations => 1, "a builtin can be discouraged without a preferred module";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'Using the builtin each is not recommended',
+                'iterating with each() is error prone'
+            ]
+        ],
+        'violation description & explanation'
+    );
+
+    is $violations[0]->severity, 4, "severity override applies to builtin sections";
+}
+
+{
+    note "module and builtin preferences side by side";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+[perl/rand]
+prefer = Crypt::PRNG
+EOS
+
+    my $mixed_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $mixed_critic->critique( \$code );
+    is scalar @violations => 2, "module and builtin sections coexist";
+}
+
+{
+    note "a bare [perl] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl]
+prefer = Crypt::PRNG
+for = rand
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{use a '\[perl/<function>\]' section to prefer a module over a builtin function},
+        "Throw exception pointing at the right spelling"
+    );
+}
+
+{
+    note "'for' inside a [perl/...] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = Crypt::PRNG
+for = rand
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Package 'perl/rand' is using an unknown setting 'for'},
+        "'for' is not a valid setting for a builtin section"
+    );
+}
+
+{
+    note "invalid severity inside a [perl/...] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+severity = 9
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Package 'perl/rand' has invalid severity '9'},
+        "severity is validated in builtin sections too"
+    );
+}
+
+
+# loading a module to inspect its exports is unsafe
+
+{
+    note "a config that has to load modules requires -allow-unsafe";
+
+    # -single-policy bypasses the safety check, so ask for the policy by name
+    sub _load_policy {
+        my (%extra) = @_;
+
+        my $critic = Perl::Critic->new(
+            '-profile' => $profile_rc,
+            '-only'    => 1,
+            '-include' => ['PreferredModules'],
+            %extra,
+        );
+
+        return scalar $critic->policies;
+    }
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+EOS
+
+    is _load_policy() => 1, "module preferences alone are safe";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+reason = just do not
+EOS
+
+    is _load_policy() => 1, "a builtin section without prefer never loads anything";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    is _load_policy() => 0, "preferring a module over a builtin is unsafe";
+    is _load_policy( '-allow-unsafe' => 1 ) => 1, "-allow-unsafe loads it";
+}
+
+{
+    note "the configuration is read and parsed once";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Default
+EOS
+
+    my $parses = 0;
+    my $reader = \&Config::INI::Reader::read_string;
+
+    no warnings 'redefine';
+    local *Config::INI::Reader::read_string = sub { $parses++; return $reader->(@_) };
+    use warnings 'redefine';
+
+    # is_safe() asks for the configuration before initialize_if_enabled does
+    Perl::Critic->new(
+        '-profile'      => $profile_rc,
+        '-only'         => 1,
+        '-include'      => ['PreferredModules'],
+        '-allow-unsafe' => 1,
+    );
+
+    is $parses => 1, "the INI file is parsed once, not once per caller";
+}
+
+{
+    note "the policy still works when unsafe is allowed";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    my $critic = Perl::Critic->new(
+        '-profile'      => $profile_rc,
+        '-only'         => 1,
+        '-include'      => ['PreferredModules'],
+        '-allow-unsafe' => 1,
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $critic->critique( \$code );
+    is scalar @violations => 1, "the export check runs once unsafe is allowed";
 }
 
 done_testing;
