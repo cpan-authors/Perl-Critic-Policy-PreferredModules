@@ -506,17 +506,31 @@ subroutine declarations of the same name are left alone:
     my $x = $prng->rand;           # no violation
     my %h = ( rand => 1 );         # no violation
 
-When the preferred module is imported in a way that provides the function, the
-call is already the recommended one and nothing is reported:
+=head3 Calls to the preferred implementation are not reported
+
+This is deliberate, and worth spelling out because it is easy to wonder about:
+when the preferred module is imported in a way that provides the function, a
+call to that name I<is> the preferred implementation, so nothing is reported.
+Without this the policy would flag the very code it is asking you to write,
+since a module that replaces a builtin usually exports it under the same name.
 
     use Crypt::PRNG qw{ rand };
-    my $x = rand();                # no violation
+    my $x = rand();                # no violation, this is Crypt::PRNG::rand
 
     use Crypt::PRNG;               # may export rand by default
     my $x = rand();                # no violation
 
     use Crypt::PRNG ();            # imports nothing
-    my $x = rand();                # violation
+    my $x = rand();                # violation, this is the builtin
+
+The whole document is considered, not just the enclosing scope, and the import
+list is read statically: the module is never loaded, so its default exports are
+unknown. A bare C<use Crypt::PRNG> is therefore assumed to provide the function,
+which errs on the side of staying quiet. Use C<use Crypt::PRNG ()> - which
+imports nothing, so the builtin really is what gets called - if you want the
+call reported anyway. Fully qualified calls such as C<Crypt::PRNG::rand()> never
+match a C<[perl/rand]> section to begin with, since the section only applies to
+unqualified calls.
 
 Leaving C<prefer> out discourages the builtin outright:
 

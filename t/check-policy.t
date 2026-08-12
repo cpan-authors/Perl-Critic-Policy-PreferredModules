@@ -1049,6 +1049,36 @@ EOS
         my @violations = $builtin_critic->critique( \$code );
         is scalar @violations => 0, "method calls, hash keys and sub names are not builtin calls";
     }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = Crypt::PRNG::rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "a fully qualified call does not match a [perl/...] section";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+sub roll {
+    return rand();
+}
+
+use Crypt::PRNG qw{ rand };
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "the import is looked up document wide, not per scope";
+    }
 }
 
 {
