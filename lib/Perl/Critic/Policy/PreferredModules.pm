@@ -456,7 +456,7 @@ Each module entry supports the following optional keys:
 Sometimes the preferred module only implements a part of the API it replaces.
 For example L<File::Slurper::Temp> is a rename-in-place writer: it provides the
 C<write_> functions of L<File::Slurper> but none of its readers. Recommending it
-unconditionally would be wrong.
+unconditionally would be incorrect.
 
 The C<for> key limits the recommendation to the listed functions:
 
@@ -481,7 +481,7 @@ functions is actually called, either directly or fully qualified:
     require File::Slurper;
     File::Slurper::read_text($file);               # no violation
 
-=head2 Preferring a module over a builtin function
+=head2 Preferring a module's implementation of a builtin function
 
 A section named C<[perl/E<lt>functionE<gt>]> applies to calls to the builtin
 function rather than to a module import. Use one section per function:
@@ -490,12 +490,11 @@ function rather than to a module import. Use one section per function:
     prefer = Crypt::PRNG
     reason = the builtin rand is not cryptographically secure
 
-    [perl/sleep]
-    prefer = Time::HiRes
-
 These sections accept the same C<prefer>, C<reason> and C<severity> keys as a
 module entry. C<for> is not accepted: the function is already named by the
-section itself. A bare C<[perl]> section is rejected, since duplicate INI
+section itself.
+
+A bare C<[perl]> section is rejected, since duplicate INI
 section names silently collapse into one.
 
 The call has to be a real function call, so method calls, hash keys and
@@ -508,11 +507,8 @@ subroutine declarations of the same name are left alone:
 
 =head3 Calls to the preferred implementation are not reported
 
-This is deliberate, and worth spelling out because it is easy to wonder about:
-when the preferred module is imported in a way that provides the function, a
+When the preferred module is imported in a way that provides the function, a
 call to that name I<is> the preferred implementation, so nothing is reported.
-Without this the policy would flag the very code it is asking you to write,
-since a module that replaces a builtin usually exports it under the same name.
 
     use Crypt::PRNG qw{ rand };
     my $x = rand();                # no violation, this is Crypt::PRNG::rand
@@ -526,9 +522,9 @@ since a module that replaces a builtin usually exports it under the same name.
 The whole document is considered, not just the enclosing scope, and the import
 list is read statically: the module is never loaded, so its default exports are
 unknown. A bare C<use Crypt::PRNG> is therefore assumed to provide the function,
-which errs on the side of staying quiet. Use C<use Crypt::PRNG ()> - which
-imports nothing, so the builtin really is what gets called - if you want the
-call reported anyway. Fully qualified calls such as C<Crypt::PRNG::rand()> never
+which errs on the side of staying quiet. Use an empty import list, e.g.
+C<use Crypt::PRNG ()> if you want to be fully sure you never call the builtin.
+Fully qualified calls such as C<Crypt::PRNG::rand()> never
 match a C<[perl/rand]> section to begin with, since the section only applies to
 unqualified calls.
 
