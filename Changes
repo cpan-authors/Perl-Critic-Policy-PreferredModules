@@ -8,6 +8,8 @@ Revision history for Perl-Critic-Policy-PreferredModules
   module, the 'reason' and 'severity' keys keep working alongside it (GH #9)
 - report the modules passed to 'use parent' and 'use base', including quoted
   strings, qw() lists and the -norequire flag (GH #16)
+- report the module named by a 'use if' conditional import, which used to be
+  missed as the pragma name was taken for the module being loaded (GH #21)
 - add a 'for' key to restrict a preference to a list of functions (GH #23)
 - add '[perl/<function>]' sections to prefer a module's implementation of a
   builtin function (GH #23)
