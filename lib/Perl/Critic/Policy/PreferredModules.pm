@@ -120,7 +120,7 @@ sub violates {
     my $expl = $setup->{reason} // $desc;
 
     if ( my $prefer = $setup->{prefer} ) {
-        $desc = "Prefer using module module $prefer over $module";
+        $desc = "Prefer using module $prefer over $module";
     }
 
     if ( my $sev = $setup->{severity} ) {
