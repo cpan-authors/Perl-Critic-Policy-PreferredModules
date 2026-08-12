@@ -123,7 +123,26 @@ sub violates {
     my $module = $elem->module;
 
     return () unless defined $module;
-    return () unless my $setup = $self->{_cfg_preferred_modules}->{$module};
+
+    my @violations;
+
+    if ( my $setup = $self->{_cfg_preferred_modules}->{$module} ) {
+        push @violations, $self->_build_violation( $module, $setup, $elem );
+    }
+
+    # Also check modules passed as arguments to 'use parent' / 'use base'
+    if ( $module eq 'parent' || $module eq 'base' ) {
+        for my $parent_mod ( $self->_extract_parent_modules($elem) ) {
+            next unless my $setup = $self->{_cfg_preferred_modules}->{$parent_mod};
+            push @violations, $self->_build_violation( $parent_mod, $setup, $elem );
+        }
+    }
+
+    return @violations;
+}
+
+sub _build_violation {
+    my ( $self, $module, $setup, $elem ) = @_;
 
     my $desc = qq[Using module $module is not recommended];
     my $expl = $setup->{reason} // $desc;
@@ -141,6 +160,22 @@ sub violates {
     }
 
     return $self->violation( $desc, $expl, $elem );
+}
+
+sub _extract_parent_modules {
+    my ( $self, $elem ) = @_;
+
+    my @modules;
+    for my $child ( $elem->schildren ) {
+        if ( $child->isa('PPI::Token::Quote') ) {
+            my $val = $child->string;
+            push @modules, $val if $val =~ /\A[A-Za-z_]\w*(?:::\w+)*\z/;
+        }
+        elsif ( $child->isa('PPI::Token::QuoteLike::Words') ) {
+            push @modules, grep { /\A[A-Za-z_]\w*(?:::\w+)*\z/ } $child->literal;
+        }
+    }
+    return @modules;
 }
 
 1;
@@ -205,6 +240,17 @@ Each module entry supports the following optional keys:
 =item C<message> - Free-form description that fully replaces the auto-generated violation text
 
 =back
+
+=head1 PARENT AND BASE CLASS CHECKING
+
+When the policy encounters C<use parent> or C<use base> statements, it also
+checks the modules passed as arguments. For example, if C<Banned::Module> is
+in your configuration file, all of these will trigger a violation:
+
+    use Banned::Module;
+    use parent 'Banned::Module';
+    use base qw(Banned::Module);
+    use parent -norequire, 'Banned::Module';
 
 =head1 SEE ALSO
 
