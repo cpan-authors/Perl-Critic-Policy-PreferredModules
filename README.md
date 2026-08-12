@@ -47,10 +47,15 @@ reason="If you use this module, a puppy might die."
 severity=5
 reason="This module has known security vulnerabilities"
 
+[Custom::Message]
+message="Do not use Custom::Message - see internal wiki for details"
+
 [File::Slurper]
 prefer = File::Slurper::Temp
 for = write_binary write_text
-reason ="Need to do atomic writes"
+
+[perl/rand]
+prefer = Crypt::PRNG
 ```
 
 Each module entry supports the following optional keys:
@@ -58,6 +63,7 @@ Each module entry supports the following optional keys:
 - `prefer` - Suggested replacement module
 - `reason` - Explanation shown in the violation message
 - `severity` - Override the policy's default severity for this module (1-5, where 5 is most severe)
+- `message` - Free-form description that fully replaces the auto-generated violation text
 - `for` - Restrict the preference to a list of functions (whitespace and/or comma separated)
 
 ## Partial preferences
@@ -220,6 +226,19 @@ Leaving `prefer` out discourages the builtin outright:
 [perl/each]
 reason = iterating with each() is error prone
 severity = 4
+```
+
+# PARENT AND BASE CLASS CHECKING
+
+When the policy encounters `use parent` or `use base` statements, it also
+checks the modules passed as arguments. For example, if `Banned::Module` is
+in your configuration file, all of these will trigger a violation:
+
+```perl
+use Banned::Module;
+use parent 'Banned::Module';
+use base qw(Banned::Module);
+use parent -norequire, 'Banned::Module';
 ```
 
 # SEE ALSO
