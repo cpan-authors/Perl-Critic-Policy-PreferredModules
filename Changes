@@ -2,6 +2,8 @@ Revision history for Perl-Critic-Policy-PreferredModules
 
 {{$NEXT}}
 
+0.005     2026-08-12 15:14:44-06:00 America/Denver
+
 - add a 'severity' key to override the policy severity for a single module
   (GH #6)
 - add a 'message' key to replace the violation description for a single
