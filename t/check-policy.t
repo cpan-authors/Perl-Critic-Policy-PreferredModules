@@ -896,6 +896,291 @@ EOS
     );
 }
 
+# preferring a module over a builtin function: [perl/<function>]
+
+{
+    note "prefer a module over a builtin function";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = Crypt::PRNG
+reason = the builtin rand is not cryptographically secure
+[perl/sleep]
+prefer = Time::HiRes
+EOS
+
+    my $builtin_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "calling the builtin rand is a violation";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using Crypt::PRNG::rand over the builtin rand',
+                    'the builtin rand is not cryptographically secure'
+                ]
+            ],
+            'violation description & explanation'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = rand;
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "a call without parentheses is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+sleep 1;
+my $x = rand(10);
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 2, "multiple [perl/...] sections are all honored";
+
+        is(
+            [ map { $_->description } @violations ],
+            [
+                'Prefer using Time::HiRes::sleep over the builtin sleep',
+                'Prefer using Crypt::PRNG::rand over the builtin rand',
+            ],
+            'one violation per configured builtin'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG qw{ rand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "importing the preferred implementation clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG;
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "a bare use of the preferred module may export it";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG ();
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "`use Module ()` imports nothing, so the builtin is still used";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use Crypt::PRNG qw{ irand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 1, "importing another function does not clear the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+my $x = $prng->rand();
+my %h = ( rand => 1, sleep => 2 );
+
+sub rand_helper { return 42 }
+
+1;
+EOS
+
+        my @violations = $builtin_critic->critique( \$code );
+        is scalar @violations => 0, "method calls, hash keys and sub names are not builtin calls";
+    }
+}
+
+{
+    note "builtin preference without prefer, and severity override";
+
+    _write_file( $config_ini, <<EOS );
+[perl/each]
+reason = iterating with each() is error prone
+severity = 4
+EOS
+
+    my $builtin_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+while ( my ( $k, $v ) = each(%h) ) { }
+
+1;
+EOS
+
+    my @violations = $builtin_critic->critique( \$code );
+    is scalar @violations => 1, "a builtin can be discouraged without a preferred module";
+
+    is(
+        _massage_violations(@violations),
+        [
+            [
+                'Using the builtin each is not recommended',
+                'iterating with each() is error prone'
+            ]
+        ],
+        'violation description & explanation'
+    );
+
+    is $violations[0]->severity, 4, "severity override applies to builtin sections";
+}
+
+{
+    note "module and builtin preferences side by side";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+[perl/rand]
+prefer = Crypt::PRNG
+EOS
+
+    my $mixed_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $mixed_critic->critique( \$code );
+    is scalar @violations => 2, "module and builtin sections coexist";
+}
+
+{
+    note "a bare [perl] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl]
+prefer = Crypt::PRNG
+for = rand
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{use a '\[perl/<function>\]' section to prefer a module over a builtin function},
+        "Throw exception pointing at the right spelling"
+    );
+}
+
+{
+    note "'for' inside a [perl/...] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = Crypt::PRNG
+for = rand
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Package 'perl/rand' is using an unknown setting 'for'},
+        "'for' is not a valid setting for a builtin section"
+    );
+}
+
+{
+    note "invalid severity inside a [perl/...] section";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+severity = 9
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $profile_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Package 'perl/rand' has invalid severity '9'},
+        "severity is validated in builtin sections too"
+    );
+}
+
 done_testing;
 
 sub _massage_violations {

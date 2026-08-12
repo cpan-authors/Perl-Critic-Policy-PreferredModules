@@ -23,9 +23,14 @@ sub supported_parameters {
 }
 
 use constant default_severity => $SEVERITY_MEDIUM;
-use constant applies_to       => 'PPI::Statement::Include';
+use constant applies_to       => qw{ PPI::Statement::Include PPI::Token::Word };
 
 use constant optional_config_attributes => qw{ prefer reason severity message for };
+
+use constant builtin_config_attributes => qw{ prefer reason severity };
+
+# `[perl/rand]` prefers a module over the builtin function `rand`
+use constant BUILTIN_SECTION => qr{\A perl \s* / \s* (\S+) \z}x;
 
 # VERSION
 # ABSTRACT: Provide custom package recommendations
@@ -49,6 +54,32 @@ sub _throw {
     );
 }
 
+# Collect a configuration error rather than dying on the spot, so a single run
+# can report every problem in the file at once.
+sub _add_exception {
+    my ( $self, $msg ) = @_;
+
+    $self->{_config_errors} //= Perl::Critic::Exception::AggregateConfiguration->new();
+
+    $self->{_config_errors}->add_exception(
+        Perl::Critic::Exception::Configuration::Generic->new(
+            message => __PACKAGE__ . ' ' . ( $msg // 'Unknown Error' ),
+        )
+    );
+
+    return;
+}
+
+sub _throw_collected_exceptions {
+    my ($self) = @_;
+
+    my $errors = delete $self->{_config_errors} or return;
+
+    die $errors if $errors->has_exceptions();
+
+    return;
+}
+
 sub _parse_config {
     my ( $self, $cfg_file ) = @_;
 
@@ -64,7 +95,7 @@ sub _parse_config {
     {
         local $/;
         open my $fh, '<', $cfg_file
-            or return $self->_add_exception(qq[Cannot open config file '$cfg_file': $!]);
+            or $self->_throw(qq[Cannot open config file '$cfg_file': $!]);
         $content = <$fh>;
     }
 
@@ -73,8 +104,7 @@ sub _parse_config {
         $self->_throw(qq[Invalid configuration file $cfg_file]);
     };
 
-    my %valid_opts = map { $_ => 1 } optional_config_attributes();
-    my $errors     = Perl::Critic::Exception::AggregateConfiguration->new();
+    my ( %modules, %builtins );
 
     # Config::INI uses '_' for the root/default section — skip it
     delete $preferred_cfg->{'_'};
@@ -82,44 +112,63 @@ sub _parse_config {
     foreach my $pkg ( sort keys %$preferred_cfg ) {
         my $setup = $preferred_cfg->{$pkg};
 
-        foreach my $opt ( keys %$setup ) {
-            next if $valid_opts{$opt};
-            $errors->add_exception(
-                Perl::Critic::Exception::Configuration::Generic->new(
-                    message => __PACKAGE__ . " Invalid configuration - Package '$pkg' is using an unknown setting '$opt'",
-                )
-            );
+        if ( $pkg eq 'perl' ) {
+            $self->_add_exception(
+                "Invalid configuration - use a '[perl/<function>]' section to prefer a module over a builtin function");
+            next;
         }
 
-        if ( defined $setup->{severity} ) {
-            my $sev = $setup->{severity};
-            if ( $sev !~ /\A[1-5]\z/ ) {
-                $errors->add_exception(
-                    Perl::Critic::Exception::Configuration::Generic->new(
-                        message => __PACKAGE__ . " Invalid configuration - Package '$pkg' has invalid severity '$sev' (must be 1-5)",
-                    )
-                );
-            }
+        if ( my ($function) = $pkg =~ BUILTIN_SECTION ) {
+            $self->_validate_settings( $pkg, $setup, builtin_config_attributes() );
+            $builtins{$function} = $setup;
+            next;
         }
+
+        $self->_validate_settings( $pkg, $setup, optional_config_attributes() );
 
         if ( defined $setup->{for} ) {
             my @functions = grep { length } split m{[\s,]+}, $setup->{for};
             if ( !@functions ) {
-                $errors->add_exception(
-                    Perl::Critic::Exception::Configuration::Generic->new(
-                        message => __PACKAGE__ . " Invalid configuration - Package '$pkg' has an empty 'for' list",
-                    )
-                );
+                $self->_add_exception("Invalid configuration - Package '$pkg' has an empty 'for' list");
             }
             $setup->{_for_functions} = \@functions;
         }
+
+        $modules{$pkg} = $setup;
     }
 
-    die $errors if $errors->has_exceptions();
+    $self->_throw_collected_exceptions();
 
-    $self->{_cfg_preferred_modules} = $preferred_cfg;
+    $self->{_cfg_preferred_modules}  = \%modules;
+    $self->{_cfg_preferred_builtins} = \%builtins;
 
     return 1;
+}
+
+sub _validate_settings {
+    my ( $self, $pkg, $setup, @valid_opts ) = @_;
+
+    my %is_valid = map { $_ => 1 } @valid_opts;
+
+    foreach my $opt ( keys %$setup ) {
+        next if $is_valid{$opt};
+        $self->_add_exception("Invalid configuration - Package '$pkg' is using an unknown setting '$opt'");
+    }
+
+    if ( defined $setup->{severity} ) {
+        my $sev = $setup->{severity};
+        if ( $sev !~ /\A[1-5]\z/ ) {
+            $self->_add_exception("Invalid configuration - Package '$pkg' has invalid severity '$sev' (must be 1-5)");
+        }
+    }
+
+    return;
+}
+
+sub _is_string_token {
+    my ($token) = @_;
+
+    return $token->isa('PPI::Token::QuoteLike::Words') || $token->isa('PPI::Token::Quote');
 }
 
 # Return the list of names explicitly imported by an include statement,
@@ -130,15 +179,31 @@ sub _imported_names {
     my @names;
 
     foreach my $arg ( $elem->arguments ) {
-        if ( $arg->isa('PPI::Token::QuoteLike::Words') ) {
-            push @names, $arg->literal;
-        }
-        elsif ( $arg->isa('PPI::Token::Quote') ) {
-            push @names, $arg->string;
+        my @tokens =
+          $arg->isa('PPI::Node')
+          ? @{ $arg->find( sub { _is_string_token( $_[1] ) } ) || [] }
+          : ($arg);
+
+        foreach my $token (@tokens) {
+            next unless _is_string_token($token);
+            push @names, $token->isa('PPI::Token::QuoteLike::Words') ? $token->literal : $token->string;
         }
     }
 
     return @names;
+}
+
+# True for `use Foo ()`, which imports nothing, but not for a bare `use Foo`,
+# which pulls in whatever the module exports by default.
+sub _has_empty_import_list {
+    my ( $self, $elem ) = @_;
+
+    my @args = $elem->arguments;
+
+    return $FALSE unless @args == 1;
+    return $FALSE unless $args[0]->isa('PPI::Structure::List');
+
+    return $args[0]->schildren ? $FALSE : $TRUE;
 }
 
 # Look for calls to any of @functions anywhere in the document, either as a
@@ -177,11 +242,34 @@ sub _matches_for {
     return $self->_document_calls_any( $elem, $module, @$functions );
 }
 
-sub violates {
-    my ( $self, $elem ) = @_;
+# True when $module is used in a way that provides $function to the current
+# document, so a call to $function is already the preferred implementation.
+sub _provides_function {
+    my ( $self, $elem, $module, $function ) = @_;
 
-    return () unless $self->{_is_enabled};
-    return () unless $elem;
+    my $doc = $elem->top or return $FALSE;
+    return $FALSE unless $doc->isa('PPI::Document');
+
+    my $includes = $doc->find( sub { $_[1]->isa('PPI::Statement::Include') } ) or return $FALSE;
+
+    foreach my $include (@$includes) {
+        next unless ( $include->module // '' ) eq $module;
+        next if ( $include->type // '' ) eq 'require';
+
+        my @args = $include->arguments;
+        return $TRUE unless @args;    # relies on the default exports
+        next if $self->_has_empty_import_list($include);
+
+        foreach my $imported ( $self->_imported_names($include) ) {
+            return $TRUE if $imported eq $function;
+        }
+    }
+
+    return $FALSE;
+}
+
+sub _violates_include {
+    my ( $self, $elem ) = @_;
 
     # 'no Module' unloads/disables — not a use violation
     my $type = $elem->type;
@@ -227,6 +315,34 @@ sub _build_violation {
         $desc .= ' for ' . join( ', ', @$functions );
     }
 
+    return $self->_violation_for( $setup, $desc, $expl, $elem );
+}
+
+sub _violates_builtin {
+    my ( $self, $elem ) = @_;
+
+    my $function = $elem->content;
+
+    return () unless my $setup = $self->{_cfg_preferred_builtins}->{$function};
+    return () unless is_function_call($elem);
+
+    my $desc = qq[Using the builtin $function is not recommended];
+    my $expl = $setup->{reason} // $desc;
+
+    if ( my $prefer = $setup->{prefer} ) {
+
+        # already calling the preferred implementation
+        return () if $self->_provides_function( $elem, $prefer, $function );
+
+        $desc = "Prefer using ${prefer}::${function} over the builtin $function";
+    }
+
+    return $self->_violation_for( $setup, $desc, $expl, $elem );
+}
+
+sub _violation_for {
+    my ( $self, $setup, $desc, $expl, $elem ) = @_;
+
     if ( my $sev = $setup->{severity} ) {
         local $self->{_severity} = $sev;
         return $self->violation( $desc, $expl, $elem );
@@ -249,6 +365,18 @@ sub _extract_parent_modules {
         }
     }
     return @modules;
+}
+
+sub violates {
+    my ( $self, $elem ) = @_;
+
+    return () unless $self->{_is_enabled};
+    return () unless $elem;
+
+    return $self->_violates_include($elem) if $elem->isa('PPI::Statement::Include');
+    return $self->_violates_builtin($elem) if $elem->isa('PPI::Token::Word');
+
+    return ();
 }
 
 1;
@@ -304,6 +432,9 @@ The  F<preferred_modules.ini> file is using the L<Config::INI> format and can lo
     prefer = File::Slurper::Temp
     for = write_binary write_text
 
+    [perl/rand]
+    prefer = Crypt::PRNG
+
 Each module entry supports the following optional keys:
 
 =over 4
@@ -349,6 +480,49 @@ functions is actually called, either directly or fully qualified:
 
     require File::Slurper;
     File::Slurper::read_text($file);               # no violation
+
+=head2 Preferring a module over a builtin function
+
+A section named C<[perl/E<lt>functionE<gt>]> applies to calls to the builtin
+function rather than to a module import. Use one section per function:
+
+    [perl/rand]
+    prefer = Crypt::PRNG
+    reason = the builtin rand is not cryptographically secure
+
+    [perl/sleep]
+    prefer = Time::HiRes
+
+These sections accept the same C<prefer>, C<reason> and C<severity> keys as a
+module entry. C<for> is not accepted: the function is already named by the
+section itself. A bare C<[perl]> section is rejected, since duplicate INI
+section names silently collapse into one.
+
+The call has to be a real function call, so method calls, hash keys and
+subroutine declarations of the same name are left alone:
+
+    my $x = rand();                # violation
+    my $x = rand;                  # violation
+    my $x = $prng->rand;           # no violation
+    my %h = ( rand => 1 );         # no violation
+
+When the preferred module is imported in a way that provides the function, the
+call is already the recommended one and nothing is reported:
+
+    use Crypt::PRNG qw{ rand };
+    my $x = rand();                # no violation
+
+    use Crypt::PRNG;               # may export rand by default
+    my $x = rand();                # no violation
+
+    use Crypt::PRNG ();            # imports nothing
+    my $x = rand();                # violation
+
+Leaving C<prefer> out discourages the builtin outright:
+
+    [perl/each]
+    reason = iterating with each() is error prone
+    severity = 4
 
 =head1 PARENT AND BASE CLASS CHECKING
 
