@@ -340,6 +340,135 @@ EOS
     );
 }
 
+# edge cases: various import syntaxes
+
+{
+    note "use Module VERSION syntax";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+reason = relax this is just a test
+EOS
+
+    my $syntax_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use FindBin 1.51;
+
+1;
+EOS
+
+        my @violations = $syntax_critic->critique( \$code );
+        is scalar @violations => 1, "use Module VERSION is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use FindBin ();
+
+1;
+EOS
+
+        my @violations = $syntax_critic->critique( \$code );
+        is scalar @violations => 1, "use Module () (empty import) is a violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use FindBin qw( $Bin $Script );
+
+1;
+EOS
+
+        my @violations = $syntax_critic->critique( \$code );
+        is scalar @violations => 1, "use Module qw(...) is a violation";
+    }
+}
+
+{
+    note "pragmas are not flagged (unless configured)";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+EOS
+
+    my $pragma_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use strict;
+use warnings;
+use FindBin;
+
+1;
+EOS
+
+    my @violations = $pragma_critic->critique( \$code );
+    is scalar @violations => 1, "pragmas (strict, warnings) are not flagged";
+}
+
+# themes
+
+{
+    note "policy default_themes";
+
+    my $themes_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my ($policy) = $themes_critic->policies;
+    my @themes = $policy->get_themes;
+    ok scalar( grep { $_ eq 'maintenance' } @themes ), "policy has 'maintenance' theme";
+    ok scalar( grep { $_ eq 'modules' }     @themes ), "policy has 'modules' theme";
+}
+
+# prepare_to_scan_document
+
+{
+    note "prepare_to_scan_document skips when disabled";
+
+    my $no_config_rc = File::Spec->catfile( $tmpdir, 'no_config.rc' );
+    _write_file( $no_config_rc, <<EOS );
+severity = 1
+verbose  = 8
+
+[PreferredModules]
+EOS
+
+    my $disabled_critic = Perl::Critic->new(
+        '-profile'       => $no_config_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+1;
+EOS
+
+    my @violations = $disabled_critic->critique( \$code );
+    is scalar @violations => 0, "no violations when policy has no config (disabled)";
+}
+
 done_testing;
 
 sub _massage_violations {
