@@ -247,11 +247,11 @@ use parent -norequire, 'Banned::Module';
 
 # AUTHOR
 
-Nicolas R <atoomic@cpan.org>
+Nicolas R <nicolas@atoomic.org>
 
 # COPYRIGHT AND LICENSE
 
-This software is copyright (c) 2022 by cPanel, L.L.C.
+This software is copyright (c) 2026 by WebPros International, LLC.
 
 This is free software; you can redistribute it and/or modify it under
 the same terms as the Perl 5 programming language system itself.

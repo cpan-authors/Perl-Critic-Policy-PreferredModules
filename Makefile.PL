@@ -8,7 +8,7 @@ use ExtUtils::MakeMaker;
 
 my %WriteMakefileArgs = (
   "ABSTRACT" => "Provide custom package recommendations",
-  "AUTHOR" => "Nicolas R <atoomic\@cpan.org>",
+  "AUTHOR" => "Nicolas R <nicolas\@atoomic.org>",
   "CONFIGURE_REQUIRES" => {
     "ExtUtils::MakeMaker" => 0
   },
