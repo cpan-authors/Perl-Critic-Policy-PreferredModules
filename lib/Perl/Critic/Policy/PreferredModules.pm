@@ -78,13 +78,8 @@ sub _loads_modules {
 sub _scan_builtin_sections {
     my ($self) = @_;
 
-    my $cfg_file = eval { $self->_config_file } // '';
-
-    return {} unless length $cfg_file && -e $cfg_file;
-
-    my $content = _slurp($cfg_file) // return {};
-
-    my $cfg = eval { Config::INI::Reader->read_string($content) } or return {};
+    my $raw = eval { $self->_read_config } or return {};
+    my $cfg = $raw->{config}               or return {};
 
     my %builtins;
     foreach my $pkg ( keys %$cfg ) {
@@ -95,16 +90,46 @@ sub _scan_builtin_sections {
     return \%builtins;
 }
 
-# slurp the file rather than using `read_file` for compat with Test::MockFile
-sub _slurp {
-    my ($path) = @_;
+# Read and parse the INI file, once. is_safe() needs it before
+# initialize_if_enabled does, and both are given the same answer. Problems are
+# recorded rather than thrown, so the caller decides when to complain.
+sub _read_config {
+    my ( $self, $cfg_file ) = @_;
 
-    local $/;
-    open my $fh, '<', $path or return undef;
-    my $content = <$fh>;
-    close $fh;
+    $cfg_file //= $self->_config_file;
 
-    return $content;
+    my $cached = $self->{_raw_config};
+    return $cached if $cached && $cached->{file} eq $cfg_file;
+
+    my $raw = $self->{_raw_config} = { file => $cfg_file };
+
+    return $raw if !length $cfg_file;
+
+    if ( !-e $cfg_file ) {
+        $raw->{error} = qq[config file '$cfg_file' does not exist.];
+        return $raw;
+    }
+
+    # slurp the file rather than using `read_file` for compat with Test::MockFile
+    my $content;
+    {
+        local $/;
+        open my $fh, '<', $cfg_file or do {
+            $raw->{error} = qq[Cannot open config file '$cfg_file': $!];
+            return $raw;
+        };
+        $content = <$fh>;
+    }
+
+    my $parsed;
+    if ( eval { $parsed = Config::INI::Reader->read_string($content); 1 } ) {
+        $raw->{config} = $parsed;
+    }
+    else {
+        $raw->{error} = qq[Invalid configuration file $cfg_file];
+    }
+
+    return $raw;
 }
 
 sub _throw {
@@ -144,21 +169,13 @@ sub _throw_collected_exceptions {
 sub _parse_config {
     my ( $self, $cfg_file ) = @_;
 
-    if ( !length $cfg_file ) {
-        return;
-    }
+    my $raw = $self->_read_config($cfg_file);
 
-    if ( !-e $cfg_file ) {
-        $self->_throw(qq[config file '$cfg_file' does not exist.]);
-    }
+    # A file we cannot read or parse at all is fatal on the spot; only the
+    # per-package settings below are collected and reported together.
+    $self->_throw( $raw->{error} ) if $raw->{error};
 
-    my $content = _slurp($cfg_file)
-      // $self->_throw(qq[Cannot open config file '$cfg_file': $!]);
-
-    my $preferred_cfg;
-    eval { $preferred_cfg = Config::INI::Reader->read_string($content); 1 } or do {
-        $self->_throw(qq[Invalid configuration file $cfg_file]);
-    };
+    my $preferred_cfg = $raw->{config} or return;
 
     my ( %modules, %builtins );
 

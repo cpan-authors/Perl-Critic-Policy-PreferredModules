@@ -1491,6 +1491,32 @@ EOS
 }
 
 {
+    note "the configuration is read and parsed once";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Default
+EOS
+
+    my $parses = 0;
+    my $reader = \&Config::INI::Reader::read_string;
+
+    no warnings 'redefine';
+    local *Config::INI::Reader::read_string = sub { $parses++; return $reader->(@_) };
+    use warnings 'redefine';
+
+    # is_safe() asks for the configuration before initialize_if_enabled does
+    Perl::Critic->new(
+        '-profile'      => $profile_rc,
+        '-only'         => 1,
+        '-include'      => ['PreferredModules'],
+        '-allow-unsafe' => 1,
+    );
+
+    is $parses => 1, "the INI file is parsed once, not once per caller";
+}
+
+{
     note "the policy still works when unsafe is allowed";
 
     _write_file( $config_ini, <<EOS );
