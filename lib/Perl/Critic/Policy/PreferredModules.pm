@@ -40,12 +40,71 @@ use constant BUILTIN_SECTION => qr{\A perl \s* / \s* (\S+) \z}x;
 sub initialize_if_enabled {
     my ( $self, $config ) = @_;
 
+    $self->{_is_enabled} = !! $self->_parse_config( $self->_config_file($config) );
+
+    return $TRUE;
+}
+
+sub _config_file {
+    my ( $self, $config ) = @_;
+
+    $config //= $self->__get_config;
+
     my $cfg_file = $config->get('config') // '';
     $cfg_file =~ s{^~}{$ENV{HOME}};
 
-    $self->{_is_enabled} = !! $self->_parse_config($cfg_file);
+    return $cfg_file;
+}
 
-    return $TRUE;
+# Resolving a `prefer` module for a builtin means loading it, so such a
+# configuration is only honoured when unsafe policies are allowed.
+sub is_safe {
+    my ($self) = @_;
+
+    return $self->_loads_modules ? $FALSE : $TRUE;
+}
+
+sub _loads_modules {
+    my ($self) = @_;
+
+    # Perl::Critic asks before initialize_if_enabled has parsed anything, so
+    # take a look at the configuration ourselves. Errors are left for
+    # _parse_config to report at the usual point.
+    my $builtins = $self->{_cfg_preferred_builtins} // $self->_scan_builtin_sections;
+
+    return ( grep { defined $_->{prefer} } values %$builtins ) ? $TRUE : $FALSE;
+}
+
+sub _scan_builtin_sections {
+    my ($self) = @_;
+
+    my $cfg_file = eval { $self->_config_file } // '';
+
+    return {} unless length $cfg_file && -e $cfg_file;
+
+    my $content = _slurp($cfg_file) // return {};
+
+    my $cfg = eval { Config::INI::Reader->read_string($content) } or return {};
+
+    my %builtins;
+    foreach my $pkg ( keys %$cfg ) {
+        next unless my ($function) = $pkg =~ BUILTIN_SECTION;
+        $builtins{$function} = $cfg->{$pkg};
+    }
+
+    return \%builtins;
+}
+
+# slurp the file rather than using `read_file` for compat with Test::MockFile
+sub _slurp {
+    my ($path) = @_;
+
+    local $/;
+    open my $fh, '<', $path or return undef;
+    my $content = <$fh>;
+    close $fh;
+
+    return $content;
 }
 
 sub _throw {
@@ -93,13 +152,8 @@ sub _parse_config {
         $self->_throw(qq[config file '$cfg_file' does not exist.]);
     }
 
-    my $content;
-    {
-        local $/;
-        open my $fh, '<', $cfg_file
-            or $self->_throw(qq[Cannot open config file '$cfg_file': $!]);
-        $content = <$fh>;
-    }
+    my $content = _slurp($cfg_file)
+      // $self->_throw(qq[Cannot open config file '$cfg_file': $!]);
 
     my $preferred_cfg;
     eval { $preferred_cfg = Config::INI::Reader->read_string($content); 1 } or do {
@@ -768,6 +822,29 @@ read from the symbol table - the same lists L<Exporter> itself consults, so
 exports built at load time or inherited from a parent are accounted for. Only
 modules you name in your own configuration are ever loaded, and each is resolved
 at most once per run.
+
+=head3 This requires C<-allow-unsafe>
+
+Loading a module runs its code: C<BEGIN> blocks, top level statements, whatever
+the author put there. That is more than static analysis is normally allowed to
+do, so a configuration that needs it is treated as unsafe and L<Perl::Critic>
+will not load this policy without C<-allow-unsafe>:
+
+    perlcritic --allow-unsafe ...
+
+or, in your F<.perlcriticrc>:
+
+    allow_unsafe = 1
+
+Only a C<[perl/E<lt>functionE<gt>]> section that names a C<prefer> module makes
+the policy unsafe, because nothing else here loads anything. Module preferences,
+C<for> lists, and builtin sections without a C<prefer> all stay safe and need no
+flag.
+
+Note that the policy is silently left out when the flag is missing, which is how
+L<Perl::Critic> handles every unsafe policy. If your C<[perl/...]> sections seem
+to do nothing, that is the first thing to check. C<--single-policy> bypasses the
+safety check altogether, so it will run these sections without the flag.
 
 If a module will not load in the process running the policy, its source is
 located in C<@INC> and parsed instead. That fallback only understands literal

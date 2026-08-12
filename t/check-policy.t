@@ -1445,6 +1445,80 @@ EOS
     );
 }
 
+
+# loading a module to inspect its exports is unsafe
+
+{
+    note "a config that has to load modules requires -allow-unsafe";
+
+    # -single-policy bypasses the safety check, so ask for the policy by name
+    sub _load_policy {
+        my (%extra) = @_;
+
+        my $critic = Perl::Critic->new(
+            '-profile' => $profile_rc,
+            '-only'    => 1,
+            '-include' => ['PreferredModules'],
+            %extra,
+        );
+
+        return scalar $critic->policies;
+    }
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+EOS
+
+    is _load_policy() => 1, "module preferences alone are safe";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+reason = just do not
+EOS
+
+    is _load_policy() => 1, "a builtin section without prefer never loads anything";
+
+    _write_file( $config_ini, <<EOS );
+[FindBin]
+prefer = Something::Else
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    is _load_policy() => 0, "preferring a module over a builtin is unsafe";
+    is _load_policy( '-allow-unsafe' => 1 ) => 1, "-allow-unsafe loads it";
+}
+
+{
+    note "the policy still works when unsafe is allowed";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    my $critic = Perl::Critic->new(
+        '-profile'      => $profile_rc,
+        '-only'         => 1,
+        '-include'      => ['PreferredModules'],
+        '-allow-unsafe' => 1,
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $critic->critique( \$code );
+    is scalar @violations => 1, "the export check runs once unsafe is allowed";
+}
+
 done_testing;
 
 sub _massage_violations {
