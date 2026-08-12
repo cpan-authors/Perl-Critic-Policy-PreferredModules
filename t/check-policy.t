@@ -586,6 +586,208 @@ EOS
         "Reports unknown setting for Beta";
 }
 
+# glob / wildcard namespace matching tests
+
+{
+    note "glob patterns match namespace prefixes";
+
+    _write_file( $config_ini, <<EOS );
+[CGI::*]
+prefer = Plack
+reason = CGI is deprecated
+
+[XML::LibXML]
+prefer = XML::Twig
+reason = specific module override
+EOS
+
+    my $glob_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use CGI::Cookie;
+
+1;
+EOS
+
+        my @violations = $glob_critic->critique( \$code );
+        is scalar @violations => 1, "CGI::Cookie matches CGI::* glob";
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module Plack over CGI::Cookie',
+                    'CGI is deprecated'
+                ]
+            ],
+            'glob violation uses the glob config'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use CGI::Session::Driver;
+
+1;
+EOS
+
+        my @violations = $glob_critic->critique( \$code );
+        is scalar @violations => 1, "CGI::Session::Driver matches CGI::* (deep namespace)";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use JSON;
+
+1;
+EOS
+
+        my @violations = $glob_critic->critique( \$code );
+        is scalar @violations => 0, "JSON does not match CGI::* glob";
+    }
+}
+
+{
+    note "exact match takes precedence over glob";
+
+    _write_file( $config_ini, <<EOS );
+[XML::*]
+prefer = JSON
+reason = avoid XML
+
+[XML::LibXML]
+prefer = XML::Twig
+reason = use Twig specifically
+EOS
+
+    my $prec_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use XML::LibXML;
+
+1;
+EOS
+
+        my @violations = $prec_critic->critique( \$code );
+        is scalar @violations => 1, "XML::LibXML matches (exact over glob)";
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module XML::Twig over XML::LibXML',
+                    'use Twig specifically'
+                ]
+            ],
+            'exact match config takes precedence over glob'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use XML::Parser;
+
+1;
+EOS
+
+        my @violations = $prec_critic->critique( \$code );
+        is scalar @violations => 1, "XML::Parser matches XML::* glob";
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module JSON over XML::Parser',
+                    'avoid XML'
+                ]
+            ],
+            'non-exact module falls through to glob'
+        );
+    }
+}
+
+{
+    note "glob with severity override";
+
+    _write_file( $config_ini, <<EOS );
+[CGI::*]
+severity = 5
+reason = all CGI modules are banned
+EOS
+
+    my $sev_glob_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use CGI::Fast;
+
+1;
+EOS
+
+    my @violations = $sev_glob_critic->critique( \$code );
+    is scalar @violations => 1, "CGI::Fast matches glob with severity";
+    is $violations[0]->severity, 5, "severity override works with glob patterns";
+}
+
+{
+    note "question mark glob matches single character";
+
+    _write_file( $config_ini, <<EOS );
+[IO::Socke?]
+reason = use IO::Socket::SSL
+EOS
+
+    my $qm_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use IO::Socket;
+
+1;
+EOS
+
+        my @violations = $qm_critic->critique( \$code );
+        is scalar @violations => 1, "IO::Socket matches IO::Socke?";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use IO::Socket::SSL;
+
+1;
+EOS
+
+        my @violations = $qm_critic->critique( \$code );
+        is scalar @violations => 0, "IO::Socket::SSL does not match IO::Socke? (colon not matched by ?)";
+    }
+}
+
 done_testing;
 
 sub _massage_violations {
