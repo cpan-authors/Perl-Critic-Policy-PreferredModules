@@ -454,6 +454,80 @@ EOS
     );
 }
 
+SKIP: {
+    skip "chmod has no effect for root", 1 if $> == 0;
+
+    note "unreadable config file";
+
+    my $unreadable = File::Spec->catfile( $tmpdir, 'unreadable.ini' );
+    _write_file( $unreadable, "[Foo]\n" );
+    chmod 0000, $unreadable;
+
+    my $unreadable_rc = File::Spec->catfile( $tmpdir, 'unreadable.rc' );
+    _write_file( $unreadable_rc, <<"EOS" );
+severity = 1
+[PreferredModules]
+config = $unreadable
+EOS
+
+    like(
+        dies {
+            Perl::Critic->new(
+                '-profile'       => $unreadable_rc,
+                '-single-policy' => 'PreferredModules'
+            )
+        },
+        qr{Cannot open config file},
+        "Throw exception when config file is unreadable"
+    );
+
+    chmod 0644, $unreadable;    # restore for cleanup
+}
+
+{
+    note "Config::INI root section ignored";
+
+    _write_file( $config_ini, <<EOS );
+reason = global default
+
+[FindBin]
+prefer = Something::Else
+reason = use Something::Else instead
+EOS
+
+    my $root_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use _;
+
+1;
+EOS
+
+        my @violations = $root_critic->critique( \$code );
+        is scalar @violations => 0,
+          "root section '_' from Config::INI is not treated as a module";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+
+1;
+EOS
+
+        my @violations = $root_critic->critique( \$code );
+        is scalar @violations => 1, "named sections still match normally";
+    }
+}
+
 done_testing;
 
 sub _massage_violations {
