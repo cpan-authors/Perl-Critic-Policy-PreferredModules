@@ -621,7 +621,7 @@ EOS
             _massage_violations(@violations),
             [
                 [
-                    'Prefer using module module Plack over CGI::Cookie',
+                    'Prefer using module Plack over CGI::Cookie',
                     'CGI is deprecated'
                 ]
             ],
@@ -689,7 +689,7 @@ EOS
             _massage_violations(@violations),
             [
                 [
-                    'Prefer using module module XML::Twig over XML::LibXML',
+                    'Prefer using module XML::Twig over XML::LibXML',
                     'use Twig specifically'
                 ]
             ],
@@ -712,7 +712,7 @@ EOS
             _massage_violations(@violations),
             [
                 [
-                    'Prefer using module module JSON over XML::Parser',
+                    'Prefer using module JSON over XML::Parser',
                     'avoid XML'
                 ]
             ],
