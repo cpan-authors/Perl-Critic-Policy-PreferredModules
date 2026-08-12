@@ -521,9 +521,11 @@ call to that name I<is> the preferred implementation, so nothing is reported.
 
 The whole document is considered, not just the enclosing scope, and the import
 list is read statically: the module is never loaded, so its default exports are
-unknown. A bare C<use Crypt::PRNG> is therefore assumed to provide the function,
-which errs on the side of staying quiet. Use an empty import list, e.g.
-C<use Crypt::PRNG ()> if you want to be fully sure you never call the builtin.
+unknown. A bare C<use Crypt::PRNG> is assumed to export the function.
+If it does not, that is considered to be operator error.
+
+Use an empty import list, e.g. C<use Crypt::PRNG ()> if you want to be fully
+sure you never call the builtin.
 Fully qualified calls such as C<Crypt::PRNG::rand()> never
 match a C<[perl/rand]> section to begin with, since the section only applies to
 unqualified calls.
