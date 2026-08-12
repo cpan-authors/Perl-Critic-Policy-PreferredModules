@@ -1545,6 +1545,188 @@ EOS
     is scalar @violations => 1, "the export check runs once unsafe is allowed";
 }
 
+# use if conditional loading tests
+
+{
+    note "use if detection with quoted module name";
+
+    _write_file( $config_ini, <<EOS );
+[Some::Module]
+prefer = Better::Module
+reason = Some::Module is deprecated
+EOS
+
+    my $if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use if $] >= 5.010, "Some::Module";
+
+1;
+EOS
+
+        my @violations = $if_critic->critique( \$code );
+        is scalar @violations => 1, "use if with double-quoted module is a violation";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using module Better::Module over Some::Module',
+                    'Some::Module is deprecated'
+                ]
+            ],
+            'use if violation has correct description and explanation'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use if $^O eq 'linux', 'Some::Module';
+
+1;
+EOS
+
+        my @violations = $if_critic->critique( \$code );
+        is scalar @violations => 1, "use if with single-quoted module is a violation";
+    }
+}
+
+{
+    note "use if with bare word module name";
+
+    _write_file( $config_ini, <<EOS );
+[Foo::Bar]
+reason = Foo::Bar is banned
+EOS
+
+    my $if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use if 1, Foo::Bar;
+
+1;
+EOS
+
+    my @violations = $if_critic->critique( \$code );
+    is scalar @violations => 1, "use if with bare word module is a violation";
+}
+
+{
+    note "use if with import list";
+
+    _write_file( $config_ini, <<EOS );
+[Win32::Console]
+prefer = Term::ANSIColor
+reason = Not portable
+EOS
+
+    my $if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use if $^O eq 'MSWin32', 'Win32::Console', qw( STD_OUTPUT_HANDLE );
+
+1;
+EOS
+
+    my @violations = $if_critic->critique( \$code );
+    is scalar @violations => 1, "use if with import list is a violation";
+}
+
+{
+    note "use if with severity override";
+
+    _write_file( $config_ini, <<EOS );
+[Dangerous::Module]
+severity = 5
+reason = Known security issue
+EOS
+
+    my $sev_if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use if $ENV{DANGER}, "Dangerous::Module";
+
+1;
+EOS
+
+    my @violations = $sev_if_critic->critique( \$code );
+    is scalar @violations => 1, "use if violation with severity override";
+    is $violations[0]->severity, 5, "severity override applies to use if modules";
+}
+
+{
+    note "use if with unconfigured module is not a violation";
+
+    _write_file( $config_ini, <<EOS );
+[Bad::Module]
+reason = This one is bad
+EOS
+
+    my $if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use if 1, "Good::Module";
+
+1;
+EOS
+
+    my @violations = $if_critic->critique( \$code );
+    is scalar @violations => 0, "use if with unconfigured module is not a violation";
+}
+
+{
+    note "regular use of 'if' pragma is not flagged when 'if' is not configured";
+
+    _write_file( $config_ini, <<EOS );
+[Something::Else]
+reason = do not use
+EOS
+
+    my $if_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use if $] >= 5.010, "Safe::Module";
+
+1;
+EOS
+
+    my @violations = $if_critic->critique( \$code );
+    is scalar @violations => 0, "use if with non-configured module is fine";
+}
+
 done_testing;
 
 sub _massage_violations {

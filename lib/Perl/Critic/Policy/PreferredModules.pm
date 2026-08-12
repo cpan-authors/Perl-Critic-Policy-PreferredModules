@@ -243,6 +243,33 @@ sub _is_string_token {
     return $token->isa('PPI::Token::QuoteLike::Words') || $token->isa('PPI::Token::Quote');
 }
 
+# Extract the real module from a `use if CONDITION, 'Module::Name', IMPORT_LIST`
+# statement: after the first comma, the next token is the module name.
+sub _extract_use_if_module {
+    my ( $self, $elem ) = @_;
+
+    my $found_comma;
+    for my $child ( $elem->children ) {
+        if ( $child->isa('PPI::Token::Operator') && $child->content eq ',' ) {
+            $found_comma = 1;
+            next;
+        }
+        next unless $found_comma;
+        next if $child->isa('PPI::Token::Whitespace');
+
+        if ( $child->isa('PPI::Token::Quote') ) {
+            return $child->string;
+        }
+        if ( $child->isa('PPI::Token::Word') ) {
+            return $child->content;
+        }
+
+        return;
+    }
+
+    return;
+}
+
 # Return the list of names explicitly imported by an include statement,
 # e.g. `use Foo qw{ bar baz }` or `use Foo 'bar', 'baz'`.
 sub _imported_names {
@@ -565,6 +592,12 @@ sub _violates_include {
     my $module = $elem->module;
 
     return () unless defined $module;
+
+    # Handle 'use if CONDITION, Module' by extracting the real module
+    if ( $module eq 'if' && ( $elem->type // '' ) eq 'use' ) {
+        $module = $self->_extract_use_if_module($elem);
+        return () unless defined $module;
+    }
 
     my @violations;
 
@@ -892,6 +925,15 @@ in your configuration file, all of these will trigger a violation:
     use parent 'Banned::Module';
     use base qw(Banned::Module);
     use parent -norequire, 'Banned::Module';
+
+=head1 CONDITIONAL LOADING
+
+The policy detects modules loaded via C<use if>:
+
+    use if $] >= 5.010, 'Some::Module';
+
+If C<Some::Module> is listed in the configuration file, a violation will be
+reported. This ensures that conditional imports are not silently overlooked.
 
 =head1 SEE ALSO
 
