@@ -236,6 +236,37 @@ EOS
     );
 }
 
+{
+    note "'no Module' should not trigger violations";
+
+    my $code = <<'EOS';
+package My::Package;
+
+no FindBin;
+
+1;
+EOS
+
+    my @violations = $critic->critique( \$code );
+    is scalar @violations => 0, "no FindBin does not trigger a violation";
+}
+
+{
+    note "'no' and 'use' of same module";
+
+    my $code = <<'EOS';
+package My::Package;
+
+use FindBin;
+no FindBin;
+
+1;
+EOS
+
+    my @violations = $critic->critique( \$code );
+    is scalar @violations => 1, "only 'use' triggers, not 'no'";
+}
+
 # severity override tests
 
 {

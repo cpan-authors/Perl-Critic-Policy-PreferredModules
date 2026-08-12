@@ -116,6 +116,10 @@ sub violates {
     return () unless $self->{_is_enabled};
     return () unless $elem;
 
+    # 'no Module' unloads/disables — not a use violation
+    my $type = $elem->type;
+    return () if defined $type && $type eq 'no';
+
     my $module = $elem->module;
 
     return () unless defined $module;
