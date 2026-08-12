@@ -124,10 +124,9 @@ sub _read_config {
     my $parsed;
     if ( eval { $parsed = Config::INI::Reader->read_string($content); 1 } ) {
         $raw->{config} = $parsed;
+        return $raw;
     }
-    else {
-        $raw->{error} = qq[Invalid configuration file $cfg_file];
-    }
+    $raw->{error} = qq[Invalid configuration file $cfg_file];
 
     return $raw;
 }
