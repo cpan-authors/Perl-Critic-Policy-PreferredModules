@@ -24,6 +24,46 @@ sub _write_file {
     close $fh;
 }
 
+# Fixture modules for the export inspection tests, so the results do not depend
+# on what happens to be installed.
+my $lib_dir = File::Spec->catdir( $tmpdir, 'lib' );
+mkdir $lib_dir                                     or die "Cannot mkdir $lib_dir: $!";
+mkdir File::Spec->catdir( $lib_dir, 'TestRand' )   or die "Cannot mkdir: $!";
+unshift @INC, $lib_dir;
+
+sub _write_module {
+    my ( $name, $body ) = @_;
+
+    my @parts = split m{::}, "$name.pm";
+    _write_file( File::Spec->catfile( $lib_dir, @parts ), <<"EOS" );
+package $name;
+use strict;
+use warnings;
+use Exporter 'import';
+sub rand  { return 4 }
+sub irand { return 4 }
+$body
+1;
+EOS
+
+    return;
+}
+
+_write_module( 'TestRand::Default',   'our \@EXPORT = qw(rand); our \@EXPORT_OK = qw(irand);' );
+_write_module( 'TestRand::OnRequest', <<'EOS' );
+our @EXPORT = qw();
+our @EXPORT_OK = qw(rand irand);
+our %EXPORT_TAGS = ( all => [qw(rand irand)] );
+EOS
+
+# will not load, so its exports can only be read by parsing the source
+_write_module( 'TestRand::Unloadable',    'our @EXPORT = qw(rand); die "boom";' );
+_write_module( 'TestRand::UnloadableOnly', <<'EOS' );
+our @EXPORT = qw();
+our @EXPORT_OK = ( 'rand' );
+die "boom";
+EOS
+
 _write_file( $profile_rc, <<"EOS" );
 severity = 1
 verbose  = 8
@@ -993,21 +1033,6 @@ EOS
         my $code = <<'EOS';
 package My::Package;
 
-use Crypt::PRNG;
-
-my $x = rand();
-
-1;
-EOS
-
-        my @violations = $builtin_critic->critique( \$code );
-        is scalar @violations => 0, "a bare use of the preferred module may export it";
-    }
-
-    {
-        my $code = <<'EOS';
-package My::Package;
-
 use Crypt::PRNG ();
 
 my $x = rand();
@@ -1079,6 +1104,215 @@ EOS
         my @violations = $builtin_critic->critique( \$code );
         is scalar @violations => 0, "the import is looked up document wide, not per scope";
     }
+}
+
+{
+    note "a bare use only silences the violation when the function is exported by default";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Default
+EOS
+
+    my $default_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::Default;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $default_critic->critique( \$code );
+    is scalar @violations => 0, "rand is in \@EXPORT, so a bare use does provide it";
+}
+
+{
+    note "a module that exports the function on request only";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::OnRequest
+EOS
+
+    my $on_request_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest;
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 1, "a bare use does not provide a function that is not in \@EXPORT";
+
+        is(
+            _massage_violations(@violations),
+            [
+                [
+                    'Prefer using TestRand::OnRequest::rand over the builtin rand',
+                    'TestRand::OnRequest exports rand on request only, so this call is still the builtin'
+                      . ' - import it explicitly with `use TestRand::OnRequest qw{ rand }`'
+                ]
+            ],
+            'the explanation says what went wrong and how to fix it'
+        );
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ rand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "importing it explicitly clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ :all };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "an export tag covering the function clears the violation";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ :nonesuch };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 0, "an unknown tag is assumed to cover the function";
+    }
+
+    {
+        my $code = <<'EOS';
+package My::Package;
+
+use TestRand::OnRequest qw{ irand };
+
+my $x = rand();
+
+1;
+EOS
+
+        my @violations = $on_request_critic->critique( \$code );
+        is scalar @violations => 1, "importing a different function does not clear the violation";
+    }
+}
+
+{
+    note "a module that cannot be loaded is read from its source";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::Unloadable
+EOS
+
+    my $unloadable_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::Unloadable;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unloadable_critic->critique( \$code );
+    is scalar @violations => 0, "\@EXPORT is parsed out of a module that will not load";
+}
+
+{
+    note "a module that cannot be loaded and does not export by default";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::UnloadableOnly
+EOS
+
+    my $unloadable_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::UnloadableOnly;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unloadable_critic->critique( \$code );
+    is scalar @violations => 1, "parsing the source also catches the on-request case";
+}
+
+{
+    note "a module whose exports cannot be resolved at all";
+
+    _write_file( $config_ini, <<EOS );
+[perl/rand]
+prefer = TestRand::NoSuchModule
+EOS
+
+    my $unknown_critic = Perl::Critic->new(
+        '-profile'       => $profile_rc,
+        '-single-policy' => 'PreferredModules'
+    );
+
+    my $code = <<'EOS';
+package My::Package;
+
+use TestRand::NoSuchModule;
+
+my $x = rand();
+
+1;
+EOS
+
+    my @violations = $unknown_critic->critique( \$code );
+    is scalar @violations => 0, "an unresolvable module is assumed to export the function";
 }
 
 {

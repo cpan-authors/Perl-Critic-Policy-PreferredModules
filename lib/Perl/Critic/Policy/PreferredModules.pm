@@ -11,6 +11,8 @@ use Perl::Critic::Exception::AggregateConfiguration ();
 use Perl::Critic::Exception::Configuration::Generic ();
 
 use Config::INI::Reader ();
+use PPI::Document       ();
+use File::Spec          ();
 
 sub supported_parameters {
     return (
@@ -242,6 +244,214 @@ sub _matches_for {
     return $self->_document_calls_any( $elem, $module, @$functions );
 }
 
+sub _normalize_export_name {
+    my ($name) = @_;
+
+    $name =~ s{\A&}{};
+
+    return $name;
+}
+
+# What $module exports, as { default => {}, optional => {}, tags => {} }, or
+# undef when we cannot tell. Answers are cached: resolving means loading or
+# parsing the module.
+sub _module_exports {
+    my ( $self, $module ) = @_;
+
+    my $cache = $self->{_module_exports} //= {};
+    return $cache->{$module} if exists $cache->{$module};
+
+    $cache->{$module} = undef;    # guards against a module resolving to itself
+
+    return undef unless $module =~ m{\A [A-Za-z_]\w* (?: :: \w+ )* \z}x;
+
+    return $cache->{$module} = $self->_load_module_exports($module) // $self->_parse_module_exports($module);
+}
+
+# Preferred source: once the module is loaded its symbol table is what Exporter
+# itself consults, including anything built at load time or inherited.
+sub _load_module_exports {
+    my ( $self, $module ) = @_;
+
+    my $path = _module_path($module);
+
+    if ( !$INC{$path} ) {
+        local $SIG{__WARN__} = sub { };
+        eval { require $path; 1 } or return undef;
+    }
+
+    my %tags;
+    my %declared_tags = _package_hash( $module, 'EXPORT_TAGS' );
+    foreach my $tag ( keys %declared_tags ) {
+        my $names = $declared_tags{$tag};
+        next unless ref $names eq 'ARRAY';
+        $tags{$tag} = { map { _normalize_export_name($_) => 1 } @$names };
+    }
+
+    return {
+        default  => { map { _normalize_export_name($_) => 1 } _package_array( $module, 'EXPORT' ) },
+        optional => { map { _normalize_export_name($_) => 1 } _package_array( $module, 'EXPORT_OK' ) },
+        tags     => \%tags,
+    };
+}
+
+sub _package_array {
+    my ( $module, $name ) = @_;
+
+    no strict 'refs';    ## no critic (ProhibitNoStrict)
+    return @{"${module}::${name}"};
+}
+
+sub _package_hash {
+    my ( $module, $name ) = @_;
+
+    no strict 'refs';    ## no critic (ProhibitNoStrict)
+    return %{"${module}::${name}"};
+}
+
+# Fallback for a module that will not load in this process: read the export
+# lists straight out of its source. Only literal declarations are understood.
+sub _parse_module_exports {
+    my ( $self, $module ) = @_;
+
+    my $file = _find_module_file($module) or return undef;
+
+    my $doc = eval { PPI::Document->new($file) } or return undef;
+
+    my %exports = ( default => {}, optional => {}, tags => {} );
+
+    my $symbols = $doc->find( sub { $_[1]->isa('PPI::Token::Symbol') } ) || [];
+
+    foreach my $symbol (@$symbols) {
+        my $statement = $symbol->statement or next;
+
+        my $kind = { '@EXPORT' => 'default', '@EXPORT_OK' => 'optional' }->{ $symbol->symbol };
+
+        if ($kind) {
+            $exports{$kind}{$_} = 1 for _exported_names_in($statement);
+        }
+        elsif ( $symbol->symbol eq '%EXPORT_TAGS' ) {
+            _parse_export_tags( $statement, $exports{tags} );
+        }
+    }
+
+    return \%exports;
+}
+
+sub _module_path {
+    my ($module) = @_;
+
+    ( my $path = "$module.pm" ) =~ s{::}{/}g;
+
+    return $path;
+}
+
+sub _find_module_file {
+    my ($module) = @_;
+
+    my @parts = split m{::}, "$module.pm";
+
+    foreach my $dir (@INC) {
+        next if ref $dir;
+        my $candidate = File::Spec->catfile( $dir, @parts );
+        return $candidate if -f $candidate;
+    }
+
+    return undef;
+}
+
+sub _within_subscript {
+    my ($token) = @_;
+
+    my $parent = $token->parent;
+    while ($parent) {
+        return $TRUE if $parent->isa('PPI::Structure::Subscript');
+        $parent = $parent->parent;
+    }
+
+    return $FALSE;
+}
+
+# Literal names in an export declaration. Anything under a subscript is skipped,
+# so `@EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } )` does not yield 'all'.
+sub _exported_names_in {
+    my ($element) = @_;
+
+    my $tokens = $element->find( sub { _is_string_token( $_[1] ) } ) || [];
+
+    my @names;
+    foreach my $token (@$tokens) {
+        next if _within_subscript($token);
+        push @names, $token->isa('PPI::Token::QuoteLike::Words') ? $token->literal : $token->string;
+    }
+
+    return map { _normalize_export_name($_) } @names;
+}
+
+# Pick up `tag => [ ... ]` pairs from a %EXPORT_TAGS declaration.
+sub _parse_export_tags {
+    my ( $statement, $tags ) = @_;
+
+    my $constructors = $statement->find( sub { $_[1]->isa('PPI::Structure::Constructor') } ) || [];
+
+    foreach my $constructor (@$constructors) {
+        my $tag = _tag_name_before($constructor) or next;
+
+        my %names = map { $_ => 1 } _exported_names_in($constructor);
+        $tags->{$tag} = \%names if %names;
+    }
+
+    return;
+}
+
+sub _tag_name_before {
+    my ($constructor) = @_;
+
+    my $fat_comma = $constructor->sprevious_sibling or return undef;
+    return undef unless $fat_comma->isa('PPI::Token::Operator') && $fat_comma->content eq '=>';
+
+    my $key = $fat_comma->sprevious_sibling or return undef;
+
+    return $key->content if $key->isa('PPI::Token::Word');
+    return $key->string  if $key->isa('PPI::Token::Quote');
+
+    return undef;
+}
+
+# True when this include provides $function: either it is named in the import
+# list, or it comes in through a tag or the module's default exports. When the
+# exports cannot be resolved we assume it is provided, so an unknown module
+# never turns into a false positive.
+sub _include_provides {
+    my ( $self, $include, $module, $function ) = @_;
+
+    my $exports = $self->_module_exports($module);
+
+    my @args = $include->arguments;
+
+    if ( !@args ) {    # a bare `use Module` imports whatever it exports by default
+        return $TRUE unless $exports;
+        return $exports->{default}{$function} ? $TRUE : $FALSE;
+    }
+
+    return $FALSE if $self->_has_empty_import_list($include);
+
+    foreach my $imported ( $self->_imported_names($include) ) {
+        $imported = _normalize_export_name($imported);
+
+        return $TRUE if $imported eq $function;
+
+        next unless my ($tag) = $imported =~ m{\A:(.+)\z};
+        return $TRUE unless $exports;
+
+        my $names = $exports->{tags}{$tag};
+        return $TRUE unless $names;    # an unknown tag might well cover it
+        return $TRUE if $names->{$function};
+    }
+
+    return $FALSE;
+}
+
 # True when $module is used in a way that provides $function to the current
 # document, so a call to $function is already the preferred implementation.
 sub _provides_function {
@@ -256,16 +466,23 @@ sub _provides_function {
         next unless ( $include->module // '' ) eq $module;
         next if ( $include->type // '' ) eq 'require';
 
-        my @args = $include->arguments;
-        return $TRUE unless @args;    # relies on the default exports
-        next if $self->_has_empty_import_list($include);
-
-        foreach my $imported ( $self->_imported_names($include) ) {
-            return $TRUE if $imported eq $function;
-        }
+        return $TRUE if $self->_include_provides( $include, $module, $function );
     }
 
     return $FALSE;
+}
+
+# True when the module has the function but does not hand it over by default,
+# which is the case worth explaining: the config looks satisfied while the
+# builtin is still what runs.
+sub _exports_on_request {
+    my ( $self, $module, $function ) = @_;
+
+    my $exports = $self->_module_exports($module) or return $FALSE;
+
+    return $FALSE if $exports->{default}{$function};
+
+    return $exports->{optional}{$function} ? $TRUE : $FALSE;
 }
 
 sub _violates_include {
@@ -335,6 +552,12 @@ sub _violates_builtin {
         return () if $self->_provides_function( $elem, $prefer, $function );
 
         $desc = "Prefer using ${prefer}::${function} over the builtin $function";
+
+        if ( !defined $setup->{reason} && $self->_exports_on_request( $prefer, $function ) ) {
+            $expl =
+                "$prefer exports $function on request only, so this call is still the builtin"
+              . " - import it explicitly with `use $prefer qw{ $function }`";
+        }
     }
 
     return $self->_violation_for( $setup, $desc, $expl, $elem );
@@ -513,22 +736,52 @@ call to that name I<is> the preferred implementation, so nothing is reported.
     use Crypt::PRNG qw{ rand };
     my $x = rand();                # no violation, this is Crypt::PRNG::rand
 
-    use Crypt::PRNG;               # may export rand by default
-    my $x = rand();                # no violation
-
     use Crypt::PRNG ();            # imports nothing
     my $x = rand();                # violation, this is the builtin
 
-The whole document is considered, not just the enclosing scope, and the import
-list is read statically: the module is never loaded, so its default exports are
-unknown. A bare C<use Crypt::PRNG> is assumed to export the function.
-If it does not, that is considered to be operator error.
-
+The whole document is considered, not just the enclosing scope.
 Use an empty import list, e.g. C<use Crypt::PRNG ()> if you want to be fully
 sure you never call the builtin.
 Fully qualified calls such as C<Crypt::PRNG::rand()> never
 match a C<[perl/rand]> section to begin with, since the section only applies to
 unqualified calls.
+
+=head3 A bare C<use> is checked against the module's exports
+
+An import list that names the function can be read straight off the source, but
+a bare C<use Crypt::PRNG> only helps if the module hands the function over by
+default. Taking that on trust would hide the very mistake this is meant to
+catch, because C<Crypt::PRNG> declares C<@EXPORT = qw()>:
+
+    use Crypt::PRNG;
+    my $x = rand();                # violation, this is still the builtin
+
+That reads as though the configuration is being honoured while every call goes
+to the builtin. The explanation says what happened and how to fix it:
+
+    Crypt::PRNG exports rand on request only, so this call is still the
+    builtin - import it explicitly with `use Crypt::PRNG qw{ rand }`
+
+To answer that question the module named by C<prefer> is loaded, unless it is
+already in C<%INC>, and its C<@EXPORT>, C<@EXPORT_OK> and C<%EXPORT_TAGS> are
+read from the symbol table - the same lists L<Exporter> itself consults, so
+exports built at load time or inherited from a parent are accounted for. Only
+modules you name in your own configuration are ever loaded, and each is resolved
+at most once per run.
+
+If a module will not load in the process running the policy, its source is
+located in C<@INC> and parsed instead. That fallback only understands literal
+declarations, so a list built at runtime is invisible to it.
+
+Export tags are resolved from the same lists:
+
+    use Crypt::PRNG qw{ :all };
+    my $x = rand();                # no violation, :all covers rand
+
+When the exports cannot be resolved at all - the module is not installed, or its
+lists are built in a way the fallback cannot read - the function is assumed to
+be provided and nothing is reported, so an unresolvable module never turns into
+a false positive.
 
 Leaving C<prefer> out discourages the builtin outright:
 
